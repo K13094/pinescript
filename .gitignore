@@ -1,0 +1,12 @@
+# Claude Code settings
+.claude/
+
+# Windows artifacts
+nul
+Thumbs.db
+Desktop.ini
+
+# OS generated files
+.DS_Store
+*.swp
+*.swo

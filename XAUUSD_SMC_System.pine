@@ -1,0 +1,1104 @@
+// This Pine Script™ source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © XAUUSD Smart Money Concepts Trading System
+// Raja Banks / Wicksdontlie Style Implementation
+
+//@version=5
+indicator("XAUUSD SMC Trading System", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// SECTION 1: INPUT PARAMETERS
+// ============================================================================
+
+// --- Account Settings ---
+i_accountBalance     = input.float(100000, "Account Balance ($)", minval=100, group="Account Settings")
+i_riskPercent        = input.float(1.0, "Risk Per Trade (%)", minval=0.1, maxval=5.0, step=0.1, group="Account Settings")
+i_pipValue           = input.float(1.0, "Pip Value per Standard Lot ($)", tooltip="For XAUUSD: $1.00 per pip per standard lot", group="Account Settings")
+
+// --- Confluence Settings ---
+i_minConfluenceScore = input.int(70, "Minimum Confluence Score", minval=50, maxval=100, group="Confluence Settings")
+i_obWeight           = input.int(40, "Order Block Weight", minval=0, maxval=50, group="Confluence Settings")
+i_sweepWeight        = input.int(30, "Liquidity Sweep Weight", minval=0, maxval=50, group="Confluence Settings")
+i_fvgWeight          = input.int(20, "FVG Weight", minval=0, maxval=50, group="Confluence Settings")
+i_mtfWeight          = input.int(10, "MTF Alignment Weight", minval=0, maxval=20, group="Confluence Settings")
+
+// --- Risk Management ---
+i_tp1RR              = input.float(1.0, "TP1 Risk:Reward (partial close)", minval=0.5, maxval=3.0, step=0.1, group="Risk Management")
+i_tp1ClosePercent    = input.float(50, "TP1 Close Percentage (%)", minval=25, maxval=75, group="Risk Management")
+i_beOffset           = input.float(5, "Breakeven Offset (pips)", minval=0, maxval=50, group="Risk Management")
+i_trailBuffer        = input.float(0.3, "Trail Buffer (ATR multiplier)", minval=0.1, maxval=1.0, step=0.1, group="Risk Management")
+i_minSlPips          = input.float(100, "Minimum SL (pips)", minval=10, maxval=500, group="Risk Management")
+i_maxSlPips          = input.float(2000, "Maximum SL (pips)", minval=500, maxval=5000, group="Risk Management")
+
+// --- Exposure Management ---
+i_maxDailyLosses     = input.int(3, "Max Losing Trades Per Day", minval=1, maxval=10, group="Exposure Management")
+i_maxDrawdownPercent = input.float(10, "Max Account Drawdown (%)", minval=5, maxval=25, group="Exposure Management")
+i_cooldownBars       = input.int(6, "Cooldown Bars After Loss", minval=0, maxval=50, group="Exposure Management")
+
+// --- Structure Settings ---
+i_swingLengthHTF     = input.int(10, "HTF Swing Detection Length", minval=3, maxval=50, group="Structure Settings")
+i_swingLengthLTF     = input.int(5, "LTF Swing Detection Length", minval=2, maxval=20, group="Structure Settings")
+i_atrLength          = input.int(14, "ATR Period", minval=5, maxval=50, group="Structure Settings")
+
+// --- Timeframe Settings ---
+i_htfBias            = input.timeframe("240", "HTF for Bias (4H)", group="Timeframe Settings")
+i_setupTimeframe     = input.timeframe("15", "Setup Timeframe (15min)", group="Timeframe Settings")
+i_entryTimeframe     = input.timeframe("5", "Entry Timeframe (5min)", group="Timeframe Settings")
+
+// --- Order Block Settings ---
+i_obMinBodyPercent   = input.float(40, "OB Min Body Size (%)", minval=20, maxval=80, group="Order Block Settings") / 100
+i_obMinATR           = input.float(0.5, "OB Min Size (ATR mult)", minval=0.1, maxval=2.0, step=0.1, group="Order Block Settings")
+i_obMaxATR           = input.float(3.0, "OB Max Size (ATR mult)", minval=1.0, maxval=5.0, step=0.1, group="Order Block Settings")
+i_obDisplacement     = input.float(1.5, "OB Displacement (ATR mult)", minval=0.5, maxval=3.0, step=0.1, group="Order Block Settings")
+i_maxOrderBlocks     = input.int(10, "Max Order Blocks to Track", minval=5, maxval=20, group="Order Block Settings")
+
+// --- FVG Settings ---
+i_fvgMinATR          = input.float(0.3, "FVG Min Size (ATR mult)", minval=0.1, maxval=1.0, step=0.1, group="FVG Settings")
+i_fvgMaxATR          = input.float(2.0, "FVG Max Size (ATR mult)", minval=0.5, maxval=5.0, step=0.1, group="FVG Settings")
+i_maxFVGs            = input.int(15, "Max FVGs to Track", minval=5, maxval=30, group="FVG Settings")
+
+// --- Liquidity Settings ---
+i_equalThreshold     = input.float(0.05, "Equal Highs/Lows Threshold (%)", minval=0.01, maxval=0.2, step=0.01, group="Liquidity Settings") / 100
+i_sweepMinExtension  = input.float(0.1, "Sweep Min Extension (ATR mult)", minval=0.05, maxval=0.5, step=0.05, group="Liquidity Settings")
+i_sweepMaxExtension  = input.float(2.0, "Sweep Max Extension (ATR mult)", minval=0.5, maxval=5.0, step=0.1, group="Liquidity Settings")
+
+// --- Session Filter Settings ---
+i_useSessions        = input.bool(true, "Enable Session Filter", group="Session Filter")
+i_londonStart        = input.int(2, "London Start (EST hour)", minval=0, maxval=23, group="Session Filter")
+i_londonEnd          = input.int(5, "London End (EST hour)", minval=0, maxval=23, group="Session Filter")
+i_nyStart            = input.int(7, "NY Start (EST hour)", minval=0, maxval=23, group="Session Filter")
+i_nyEnd              = input.int(10, "NY End (EST hour)", minval=0, maxval=23, group="Session Filter")
+i_avoidMonday        = input.bool(true, "Avoid Monday Trading", group="Session Filter")
+i_avoidFriday        = input.bool(true, "Avoid Friday Trading", group="Session Filter")
+
+// --- Volatility Filter Settings ---
+i_useVolatilityFilter = input.bool(true, "Enable Volatility Filter", group="Volatility Filter")
+i_minATRRatio        = input.float(0.5, "Min ATR Ratio (vs 50-period avg)", minval=0.1, maxval=1.0, step=0.1, group="Volatility Filter")
+i_maxATRRatio        = input.float(2.5, "Max ATR Ratio (vs 50-period avg)", minval=1.5, maxval=5.0, step=0.1, group="Volatility Filter")
+
+// --- Visual Settings ---
+i_showOB             = input.bool(true, "Show Order Blocks", group="Visual Settings")
+i_showFVG            = input.bool(true, "Show Fair Value Gaps", group="Visual Settings")
+i_showLiquidity      = input.bool(true, "Show Liquidity Levels", group="Visual Settings")
+i_showSignals        = input.bool(true, "Show Entry Signals", group="Visual Settings")
+i_showTable          = input.bool(true, "Show Info Table", group="Visual Settings")
+
+// --- PineConnector Settings ---
+i_licenseID          = input.string("", "PineConnector License ID", group="PineConnector")
+i_symbol             = input.string("XAUUSD", "Symbol for Alerts", group="PineConnector")
+
+// ============================================================================
+// SECTION 2: UTILITY FUNCTIONS AND CALCULATIONS
+// ============================================================================
+
+// --- ATR Calculation ---
+atr = ta.atr(i_atrLength)
+atrSMA = ta.sma(atr, 50)
+atrRatio = atr / atrSMA
+
+// --- Pip Conversion Functions ---
+priceToPips(priceDistance) =>
+    math.abs(priceDistance) * 100  // XAUUSD: $1.00 = 100 pips
+
+pipsToPrice(pips) =>
+    pips / 100  // 100 pips = $1.00
+
+// --- Position Sizing Function ---
+calculateLotSize(slPips) =>
+    if slPips <= 0
+        0.01
+    else
+        riskAmount = i_accountBalance * (i_riskPercent / 100)
+        rawLots = riskAmount / (slPips * i_pipValue)
+        math.max(0.01, math.min(50.0, math.round(rawLots * 100) / 100))
+
+// --- Time Functions ---
+getHourEST() =>
+    // Get current hour in EST/EDT timezone
+    hour(time, "America/New_York")
+
+getDayOfWeek() =>
+    dayofweek(time)
+
+// ============================================================================
+// SECTION 3: MARKET STRUCTURE ANALYSIS
+// ============================================================================
+
+// --- Swing High/Low Detection ---
+swingHighHTF = ta.pivothigh(high, i_swingLengthHTF, i_swingLengthHTF)
+swingLowHTF = ta.pivotlow(low, i_swingLengthHTF, i_swingLengthHTF)
+swingHighLTF = ta.pivothigh(high, i_swingLengthLTF, i_swingLengthLTF)
+swingLowLTF = ta.pivotlow(low, i_swingLengthLTF, i_swingLengthLTF)
+
+// --- Track Swing Points ---
+var float lastSwingHigh = na
+var float lastSwingLow = na
+var float prevSwingHigh = na
+var float prevSwingLow = na
+var int lastSwingHighBar = na
+var int lastSwingLowBar = na
+
+if not na(swingHighHTF)
+    prevSwingHigh := lastSwingHigh
+    lastSwingHigh := swingHighHTF
+    lastSwingHighBar := bar_index - i_swingLengthHTF
+
+if not na(swingLowHTF)
+    prevSwingLow := lastSwingLow
+    lastSwingLow := swingLowHTF
+    lastSwingLowBar := bar_index - i_swingLengthHTF
+
+// --- Structure Classification ---
+isHigherHigh = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh > prevSwingHigh
+isLowerHigh = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh < prevSwingHigh
+isHigherLow = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow > prevSwingLow
+isLowerLow = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow < prevSwingLow
+
+// --- Market Structure Bias ---
+// 1 = Bullish, -1 = Bearish, 0 = Neutral/Ranging
+var int structureBias = 0
+
+isBullishStructure = isHigherHigh and isHigherLow
+isBearishStructure = isLowerHigh and isLowerLow
+
+if isBullishStructure
+    structureBias := 1
+else if isBearishStructure
+    structureBias := -1
+
+// --- Break of Structure (BOS) Detection ---
+var bool bullishBOS = false
+var bool bearishBOS = false
+var float bosLevel = na
+
+// Bullish BOS: Close breaks above last swing high
+bullishBOSCondition = not na(lastSwingHigh) and close > lastSwingHigh and close[1] <= lastSwingHigh
+if bullishBOSCondition and structureBias >= 0
+    bullishBOS := true
+    bosLevel := lastSwingHigh
+else
+    bullishBOS := false
+
+// Bearish BOS: Close breaks below last swing low
+bearishBOSCondition = not na(lastSwingLow) and close < lastSwingLow and close[1] >= lastSwingLow
+if bearishBOSCondition and structureBias <= 0
+    bearishBOS := true
+    bosLevel := lastSwingLow
+else
+    bearishBOS := false
+
+// --- Change of Character (CHoCH) Detection ---
+var bool bullishCHoCH = false
+var bool bearishCHoCH = false
+var float chochLevel = na
+
+// Bullish CHoCH: Break above swing high during bearish structure
+bullishCHoCHCondition = not na(lastSwingHigh) and close > lastSwingHigh and close[1] <= lastSwingHigh and structureBias == -1
+if bullishCHoCHCondition
+    bullishCHoCH := true
+    chochLevel := lastSwingHigh
+else
+    bullishCHoCH := false
+
+// Bearish CHoCH: Break below swing low during bullish structure
+bearishCHoCHCondition = not na(lastSwingLow) and close < lastSwingLow and close[1] >= lastSwingLow and structureBias == 1
+if bearishCHoCHCondition
+    bearishCHoCH := true
+    chochLevel := lastSwingLow
+else
+    bearishCHoCH := false
+
+// --- Premium/Discount Zone Calculation ---
+swingRange = lastSwingHigh - lastSwingLow
+equilibrium = lastSwingLow + (swingRange / 2)
+isPremium = close > equilibrium
+isDiscount = close < equilibrium
+
+// ============================================================================
+// SECTION 4: ORDER BLOCK DETECTION
+// ============================================================================
+
+// Order Block Type Definition
+type OrderBlock
+    float top
+    float bottom
+    float eq           // 50% level (equilibrium)
+    int startBar
+    bool isBullish
+    bool isMitigated
+    int mitigationBar
+    int strength       // 1-3 rating
+
+var array<OrderBlock> orderBlocks = array.new<OrderBlock>()
+
+// --- Detect Order Block ---
+detectOrderBlock() =>
+    OrderBlock ob = na
+
+    // Bullish OB: Last bearish candle before bullish move
+    if bullishBOS or bullishCHoCH
+        // Look back for the last bearish candle
+        for i = 1 to 20
+            if close[i] < open[i]  // Bearish candle
+                bodySize = math.abs(close[i] - open[i])
+                candleRange = high[i] - low[i]
+
+                // Validate body size
+                if bodySize >= candleRange * i_obMinBodyPercent
+                    // Validate size within ATR bounds
+                    if candleRange >= atr * i_obMinATR and candleRange <= atr * i_obMaxATR
+                        // Validate displacement
+                        displacement = high - high[i]
+                        if displacement >= atr * i_obDisplacement
+                            ob := OrderBlock.new(
+                                 top = high[i],
+                                 bottom = low[i],
+                                 eq = low[i] + (high[i] - low[i]) / 2,
+                                 startBar = bar_index - i,
+                                 isBullish = true,
+                                 isMitigated = false,
+                                 mitigationBar = na,
+                                 strength = displacement >= atr * 3.0 ? 3 : displacement >= atr * 2.0 ? 2 : 1
+                            )
+                            break
+
+    // Bearish OB: Last bullish candle before bearish move
+    if bearishBOS or bearishCHoCH
+        for i = 1 to 20
+            if close[i] > open[i]  // Bullish candle
+                bodySize = math.abs(close[i] - open[i])
+                candleRange = high[i] - low[i]
+
+                if bodySize >= candleRange * i_obMinBodyPercent
+                    if candleRange >= atr * i_obMinATR and candleRange <= atr * i_obMaxATR
+                        displacement = low[i] - low
+                        if displacement >= atr * i_obDisplacement
+                            ob := OrderBlock.new(
+                                 top = high[i],
+                                 bottom = low[i],
+                                 eq = low[i] + (high[i] - low[i]) / 2,
+                                 startBar = bar_index - i,
+                                 isBullish = false,
+                                 isMitigated = false,
+                                 mitigationBar = na,
+                                 strength = displacement >= atr * 3.0 ? 3 : displacement >= atr * 2.0 ? 2 : 1
+                            )
+                            break
+    ob
+
+// --- Add new Order Block ---
+newOB = detectOrderBlock()
+if not na(newOB)
+    array.push(orderBlocks, newOB)
+    // Limit array size
+    while array.size(orderBlocks) > i_maxOrderBlocks
+        array.shift(orderBlocks)
+
+// --- Update Order Block Mitigation ---
+if array.size(orderBlocks) > 0
+    for i = array.size(orderBlocks) - 1 to 0
+        ob = array.get(orderBlocks, i)
+        if not ob.isMitigated
+            if ob.isBullish
+                // Bullish OB mitigated when price enters the zone
+                if low <= ob.eq
+                    ob.isMitigated := true
+                    ob.mitigationBar := bar_index
+            else
+                // Bearish OB mitigated when price enters the zone
+                if high >= ob.eq
+                    ob.isMitigated := true
+                    ob.mitigationBar := bar_index
+
+// --- Get Active Order Blocks for Current Direction ---
+getActiveOB(isBullish) =>
+    OrderBlock result = na
+    if array.size(orderBlocks) > 0
+        for i = array.size(orderBlocks) - 1 to 0
+            ob = array.get(orderBlocks, i)
+            if ob.isBullish == isBullish and not ob.isMitigated
+                // Check if price is near the OB
+                if isBullish
+                    if close >= ob.bottom and close <= ob.top * 1.01
+                        result := ob
+                        break
+                else
+                    if close <= ob.top and close >= ob.bottom * 0.99
+                        result := ob
+                        break
+    result
+
+// ============================================================================
+// SECTION 5: FAIR VALUE GAP DETECTION
+// ============================================================================
+
+type FairValueGap
+    float top
+    float bottom
+    float size
+    int formationBar
+    bool isBullish
+    bool isFilled
+    float fillPercent
+    bool isInPremium
+
+var array<FairValueGap> fvgList = array.new<FairValueGap>()
+
+// --- Detect FVG ---
+detectFVG() =>
+    FairValueGap fvg = na
+
+    // Bullish FVG: Gap between candle 1 high and candle 3 low
+    bullishGap = low - high[2]
+    if bullishGap > 0 and bullishGap >= atr * i_fvgMinATR and bullishGap <= atr * i_fvgMaxATR
+        // Validate middle candle is bullish
+        if close[1] > open[1]
+            fvg := FairValueGap.new(
+                 top = low,
+                 bottom = high[2],
+                 size = bullishGap,
+                 formationBar = bar_index - 1,
+                 isBullish = true,
+                 isFilled = false,
+                 fillPercent = 0.0,
+                 isInPremium = high[2] > equilibrium
+            )
+
+    // Bearish FVG: Gap between candle 1 low and candle 3 high
+    bearishGap = low[2] - high
+    if bearishGap > 0 and bearishGap >= atr * i_fvgMinATR and bearishGap <= atr * i_fvgMaxATR
+        if close[1] < open[1]
+            fvg := FairValueGap.new(
+                 top = low[2],
+                 bottom = high,
+                 size = bearishGap,
+                 formationBar = bar_index - 1,
+                 isBullish = false,
+                 isFilled = false,
+                 fillPercent = 0.0,
+                 isInPremium = low[2] > equilibrium
+            )
+    fvg
+
+// --- Add new FVG ---
+newFVG = detectFVG()
+if not na(newFVG)
+    array.push(fvgList, newFVG)
+    while array.size(fvgList) > i_maxFVGs
+        array.shift(fvgList)
+
+// --- Update FVG Fill Status ---
+if array.size(fvgList) > 0
+    for i = array.size(fvgList) - 1 to 0
+        fvg = array.get(fvgList, i)
+        if not fvg.isFilled
+            if fvg.isBullish
+                if low <= fvg.top
+                    fillAmount = math.max(0, fvg.top - math.max(low, fvg.bottom))
+                    fvg.fillPercent := math.min(100, (fillAmount / fvg.size) * 100)
+                    if low <= fvg.bottom
+                        fvg.isFilled := true
+            else
+                if high >= fvg.bottom
+                    fillAmount = math.max(0, math.min(high, fvg.top) - fvg.bottom)
+                    fvg.fillPercent := math.min(100, (fillAmount / fvg.size) * 100)
+                    if high >= fvg.top
+                        fvg.isFilled := true
+
+// --- Get Active FVG for Direction ---
+getActiveFVG(isBullish) =>
+    FairValueGap result = na
+    if array.size(fvgList) > 0
+        for i = array.size(fvgList) - 1 to 0
+            fvg = array.get(fvgList, i)
+            if fvg.isBullish == isBullish and not fvg.isFilled
+                // Check if price is near/in the FVG
+                if isBullish
+                    if close >= fvg.bottom and close <= fvg.top
+                        result := fvg
+                        break
+                else
+                    if close <= fvg.top and close >= fvg.bottom
+                        result := fvg
+                        break
+    result
+
+// ============================================================================
+// SECTION 6: LIQUIDITY DETECTION
+// ============================================================================
+
+type LiquidityLevel
+    float price
+    int touchCount
+    int firstBar
+    int lastBar
+    bool isBuyside    // true = resistance/equal highs, false = support/equal lows
+    bool isSwept
+
+var array<LiquidityLevel> liquidityLevels = array.new<LiquidityLevel>()
+
+// --- Detect Equal Highs/Lows ---
+addOrUpdateLevel(price, isBuyside) =>
+    found = false
+    threshold = price * i_equalThreshold
+
+    if array.size(liquidityLevels) > 0
+        for i = 0 to array.size(liquidityLevels) - 1
+            level = array.get(liquidityLevels, i)
+            if level.isBuyside == isBuyside and math.abs(level.price - price) <= threshold
+                level.touchCount := level.touchCount + 1
+                level.lastBar := bar_index
+                found := true
+                break
+
+    if not found
+        newLevel = LiquidityLevel.new(
+             price = price,
+             touchCount = 1,
+             firstBar = bar_index,
+             lastBar = bar_index,
+             isBuyside = isBuyside,
+             isSwept = false
+        )
+        array.push(liquidityLevels, newLevel)
+        // Limit size
+        if array.size(liquidityLevels) > 30
+            array.shift(liquidityLevels)
+
+// Add swing highs/lows as liquidity levels
+if not na(swingHighHTF)
+    addOrUpdateLevel(swingHighHTF, true)
+if not na(swingLowHTF)
+    addOrUpdateLevel(swingLowHTF, false)
+
+// --- Liquidity Sweep Detection ---
+type LiquiditySweep
+    float level
+    int sweepBar
+    bool isBuyside
+    float rejectionStrength
+
+var LiquiditySweep lastSweep = na
+var bool sweepDetected = false
+
+detectLiquiditySweep() =>
+    LiquiditySweep sweep = na
+
+    if array.size(liquidityLevels) > 0
+        for i = array.size(liquidityLevels) - 1 to 0
+            level = array.get(liquidityLevels, i)
+            if not level.isSwept
+                if level.isBuyside  // Buyside liquidity (resistance)
+                    // Sweep: Wick above, close below
+                    if high > level.price and close < level.price
+                        wickAbove = high - level.price
+                        if wickAbove >= atr * i_sweepMinExtension and wickAbove <= atr * i_sweepMaxExtension
+                            bodyReject = level.price - close
+                            rejStrength = bodyReject / math.max(wickAbove, 0.0001)
+                            if rejStrength > 0.5
+                                level.isSwept := true
+                                sweep := LiquiditySweep.new(
+                                     level = level.price,
+                                     sweepBar = bar_index,
+                                     isBuyside = true,
+                                     rejectionStrength = rejStrength
+                                )
+                                break
+                else  // Sellside liquidity (support)
+                    // Sweep: Wick below, close above
+                    if low < level.price and close > level.price
+                        wickBelow = level.price - low
+                        if wickBelow >= atr * i_sweepMinExtension and wickBelow <= atr * i_sweepMaxExtension
+                            bodyReject = close - level.price
+                            rejStrength = bodyReject / math.max(wickBelow, 0.0001)
+                            if rejStrength > 0.5
+                                level.isSwept := true
+                                sweep := LiquiditySweep.new(
+                                     level = level.price,
+                                     sweepBar = bar_index,
+                                     isBuyside = false,
+                                     rejectionStrength = rejStrength
+                                )
+                                break
+    sweep
+
+currentSweep = detectLiquiditySweep()
+if not na(currentSweep)
+    lastSweep := currentSweep
+    sweepDetected := true
+else
+    sweepDetected := false
+
+// ============================================================================
+// SECTION 7: MULTI-TIMEFRAME ANALYSIS
+// ============================================================================
+
+// --- Request HTF Data ---
+[htfHigh, htfLow, htfClose, htfOpen] = request.security(syminfo.tickerid, i_htfBias, [high, low, close, open])
+
+// --- HTF Swing Detection ---
+htfSwingHigh = request.security(syminfo.tickerid, i_htfBias, ta.pivothigh(high, i_swingLengthHTF, i_swingLengthHTF))
+htfSwingLow = request.security(syminfo.tickerid, i_htfBias, ta.pivotlow(low, i_swingLengthHTF, i_swingLengthHTF))
+
+// --- HTF Structure Bias ---
+var float htfLastSwingHigh = na
+var float htfLastSwingLow = na
+var float htfPrevSwingHigh = na
+var float htfPrevSwingLow = na
+
+if not na(htfSwingHigh)
+    htfPrevSwingHigh := htfLastSwingHigh
+    htfLastSwingHigh := htfSwingHigh
+
+if not na(htfSwingLow)
+    htfPrevSwingLow := htfLastSwingLow
+    htfLastSwingLow := htfSwingLow
+
+htfHigherHigh = not na(htfLastSwingHigh) and not na(htfPrevSwingHigh) and htfLastSwingHigh > htfPrevSwingHigh
+htfHigherLow = not na(htfLastSwingLow) and not na(htfPrevSwingLow) and htfLastSwingLow > htfPrevSwingLow
+htfLowerHigh = not na(htfLastSwingHigh) and not na(htfPrevSwingHigh) and htfLastSwingHigh < htfPrevSwingHigh
+htfLowerLow = not na(htfLastSwingLow) and not na(htfPrevSwingLow) and htfLastSwingLow < htfPrevSwingLow
+
+htfBullishStructure = htfHigherHigh and htfHigherLow
+htfBearishStructure = htfLowerHigh and htfLowerLow
+
+var int htfBias = 0
+if htfBullishStructure
+    htfBias := 1
+else if htfBearishStructure
+    htfBias := -1
+
+// --- MTF Alignment Check ---
+mtfAligned = (htfBias == 1 and structureBias == 1) or (htfBias == -1 and structureBias == -1)
+mtfStrength = htfBias == structureBias ? (htfBias != 0 ? "strong" : "neutral") : "conflicting"
+
+// --- OTE Zone Calculation ---
+htfRange = htfLastSwingHigh - htfLastSwingLow
+oteFib62 = htfBias == 1 ? htfLastSwingHigh - (htfRange * 0.62) : htfLastSwingLow + (htfRange * 0.62)
+oteFib705 = htfBias == 1 ? htfLastSwingHigh - (htfRange * 0.705) : htfLastSwingLow + (htfRange * 0.705)
+oteFib79 = htfBias == 1 ? htfLastSwingHigh - (htfRange * 0.79) : htfLastSwingLow + (htfRange * 0.79)
+oteZoneTop = htfBias == 1 ? oteFib62 : oteFib79
+oteZoneBottom = htfBias == 1 ? oteFib79 : oteFib62
+
+inOTEZone = close >= oteZoneBottom and close <= oteZoneTop
+
+// ============================================================================
+// SECTION 8: CONFLUENCE SCORING ENGINE
+// ============================================================================
+
+type ConfluenceScore
+    float total
+    float obScore
+    float sweepScore
+    float fvgScore
+    float mtfScore
+    bool isValid
+    string tier
+
+calculateConfluence(isBullish) =>
+    ConfluenceScore score = ConfluenceScore.new(
+         total = 0,
+         obScore = 0,
+         sweepScore = 0,
+         fvgScore = 0,
+         mtfScore = 0,
+         isValid = false,
+         tier = "NO TRADE"
+    )
+
+    // --- Order Block Score (max 40) ---
+    activeOB = getActiveOB(isBullish)
+    if not na(activeOB)
+        float obBaseScore = i_obWeight * 0.6  // 24 points for OB
+        // Quality multiplier
+        if activeOB.strength == 3
+            obBaseScore *= 1.0
+        else if activeOB.strength == 2
+            obBaseScore *= 0.7
+        else
+            obBaseScore *= 0.4
+
+        // Check if at S/R level (equal highs/lows nearby)
+        atSR = false
+        if array.size(liquidityLevels) > 0
+            for i = 0 to array.size(liquidityLevels) - 1
+                level = array.get(liquidityLevels, i)
+                if level.touchCount >= 2 and math.abs(level.price - activeOB.eq) <= atr * 0.5
+                    atSR := true
+                    break
+
+        if atSR
+            obBaseScore += i_obWeight * 0.4  // +16 for S/R confluence
+
+        score.obScore := obBaseScore
+
+    // --- Liquidity Sweep Score (max 30) ---
+    if sweepDetected and not na(lastSweep)
+        sweepMatchesDirection = (isBullish and not lastSweep.isBuyside) or (not isBullish and lastSweep.isBuyside)
+        if sweepMatchesDirection and bar_index - lastSweep.sweepBar <= 5
+            float sweepBaseScore = i_sweepWeight * 1.0
+            if lastSweep.rejectionStrength >= 1.0
+                sweepBaseScore *= 1.0
+            else if lastSweep.rejectionStrength >= 0.7
+                sweepBaseScore *= 0.7
+            else
+                sweepBaseScore *= 0.4
+            score.sweepScore := sweepBaseScore
+
+    // --- FVG Score (max 20) ---
+    activeFVG = getActiveFVG(isBullish)
+    if not na(activeFVG)
+        float fvgBaseScore = i_fvgWeight * 1.0
+        // Quality based on size
+        sizeRatio = activeFVG.size / atr
+        if sizeRatio >= 1.0
+            fvgBaseScore *= 1.0
+        else if sizeRatio >= 0.5
+            fvgBaseScore *= 0.7
+        else
+            fvgBaseScore *= 0.4
+        score.fvgScore := fvgBaseScore
+
+    // --- MTF Alignment Score (max 10) ---
+    if mtfAligned
+        if mtfStrength == "strong"
+            score.mtfScore := i_mtfWeight * 1.0
+        else
+            score.mtfScore := i_mtfWeight * 0.5
+
+    // --- Total and Validation ---
+    score.total := score.obScore + score.sweepScore + score.fvgScore + score.mtfScore
+    score.isValid := score.total >= i_minConfluenceScore
+
+    // --- Tier Assignment ---
+    if score.total >= 90
+        score.tier := "A+"
+    else if score.total >= 80
+        score.tier := "A"
+    else if score.total >= 70
+        score.tier := "B"
+    else
+        score.tier := "NO TRADE"
+
+    score
+
+// Calculate confluence for both directions
+bullishConfluence = calculateConfluence(true)
+bearishConfluence = calculateConfluence(false)
+
+// ============================================================================
+// SECTION 9: FILTER CONDITIONS
+// ============================================================================
+
+// --- Session Filter ---
+currentHour = getHourEST()
+inLondonSession = currentHour >= i_londonStart and currentHour < i_londonEnd
+inNYSession = currentHour >= i_nyStart and currentHour < i_nyEnd
+inLondonNYOverlap = currentHour >= 8 and currentHour < 12
+inValidSession = not i_useSessions or inLondonSession or inNYSession or inLondonNYOverlap
+
+// --- Day Filter ---
+currentDay = getDayOfWeek()
+isMonday = currentDay == dayofweek.monday
+isFriday = currentDay == dayofweek.friday
+validDay = (not i_avoidMonday or not isMonday) and (not i_avoidFriday or not isFriday)
+
+// --- Volatility Filter ---
+validVolatility = not i_useVolatilityFilter or (atrRatio >= i_minATRRatio and atrRatio <= i_maxATRRatio)
+
+// --- Range Detection (ADX-based) ---
+[diPlus, diMinus, adxValue] = ta.dmi(14, 14)
+isRanging = adxValue < 20
+notRanging = not isRanging
+
+// --- Combined Filter ---
+allFiltersPassed = inValidSession and validDay and validVolatility and notRanging
+
+// ============================================================================
+// SECTION 10: EXPOSURE MANAGEMENT
+// ============================================================================
+
+var int dailyLosses = 0
+var float totalPnL = 0.0
+var int lastLossBar = 0
+var bool tradingEnabled = true
+
+// Detect new day using daily timeframe change
+newDay = ta.change(time("D")) != 0
+
+// Reset daily counters on new day
+if newDay
+    dailyLosses := 0
+    tradingEnabled := true
+
+// Check drawdown limit
+accountDrawdownPercent = math.abs(math.min(0, totalPnL)) / i_accountBalance * 100
+if accountDrawdownPercent >= i_maxDrawdownPercent
+    tradingEnabled := false
+
+// Check daily loss limit
+if dailyLosses >= i_maxDailyLosses
+    tradingEnabled := false
+
+// Check cooldown
+inCooldown = bar_index < lastLossBar + i_cooldownBars
+
+// Final trading permission
+canTrade = tradingEnabled and not inCooldown and allFiltersPassed
+
+// ============================================================================
+// SECTION 11: SIGNAL GENERATION
+// ============================================================================
+
+// --- Entry Signal Logic ---
+var bool longSignal = false
+var bool shortSignal = false
+var float entryPrice = na
+var float stopLoss = na
+var float takeProfit1 = na
+var float lotSize = na
+var string signalTier = ""
+
+// Long Signal Conditions
+longCondition = canTrade and
+                 bullishConfluence.isValid and
+                 htfBias == 1 and
+                 (bullishBOS or bullishCHoCH or (inOTEZone and structureBias == 1))
+
+// Short Signal Conditions
+shortCondition = canTrade and
+                  bearishConfluence.isValid and
+                  htfBias == -1 and
+                  (bearishBOS or bearishCHoCH or (inOTEZone and structureBias == -1))
+
+// Calculate SL and Lot Size for Long
+if longCondition and not longSignal[1]
+    longSignal := true
+    entryPrice := close
+    signalTier := bullishConfluence.tier
+
+    // Calculate Stop Loss
+    activeOB = getActiveOB(true)
+    obSL = not na(activeOB) ? activeOB.bottom - pipsToPrice(50) : low - atr * 1.5
+    structureSL = not na(lastSwingLow) ? lastSwingLow - pipsToPrice(50) : low - atr * 1.5
+    sweepSL = sweepDetected and not na(lastSweep) and not lastSweep.isBuyside ? lastSweep.level - pipsToPrice(30) : low - atr * 1.5
+    atrSL = close - atr * 1.5
+
+    // Use most conservative (lowest for long)
+    rawSL = math.min(obSL, math.min(structureSL, math.min(sweepSL, atrSL)))
+
+    // Apply min/max limits
+    minSL = close - pipsToPrice(i_minSlPips)
+    maxSL = close - pipsToPrice(i_maxSlPips)
+    stopLoss := math.max(maxSL, math.min(minSL, rawSL))
+
+    // Calculate TP1 at 1R
+    slDistance = close - stopLoss
+    takeProfit1 := close + (slDistance * i_tp1RR)
+
+    // Calculate lot size
+    slPips = priceToPips(slDistance)
+    lotSize := calculateLotSize(slPips)
+else if not longCondition
+    longSignal := false
+
+// Calculate SL and Lot Size for Short
+if shortCondition and not shortSignal[1]
+    shortSignal := true
+    entryPrice := close
+    signalTier := bearishConfluence.tier
+
+    // Calculate Stop Loss
+    activeOB = getActiveOB(false)
+    obSL = not na(activeOB) ? activeOB.top + pipsToPrice(50) : high + atr * 1.5
+    structureSL = not na(lastSwingHigh) ? lastSwingHigh + pipsToPrice(50) : high + atr * 1.5
+    sweepSL = sweepDetected and not na(lastSweep) and lastSweep.isBuyside ? lastSweep.level + pipsToPrice(30) : high + atr * 1.5
+    atrSL = close + atr * 1.5
+
+    // Use most conservative (highest for short)
+    rawSL = math.max(obSL, math.max(structureSL, math.max(sweepSL, atrSL)))
+
+    // Apply min/max limits
+    minSL = close + pipsToPrice(i_minSlPips)
+    maxSL = close + pipsToPrice(i_maxSlPips)
+    stopLoss := math.min(maxSL, math.max(minSL, rawSL))
+
+    // Calculate TP1 at 1R
+    slDistance = stopLoss - close
+    takeProfit1 := close - (slDistance * i_tp1RR)
+
+    // Calculate lot size
+    slPips = priceToPips(slDistance)
+    lotSize := calculateLotSize(slPips)
+else if not shortCondition
+    shortSignal := false
+
+// ============================================================================
+// SECTION 12: POSITION MANAGEMENT & TRAILING STOP
+// ============================================================================
+
+var bool inPosition = false
+var bool isLongPosition = false
+var float positionEntry = na
+var float positionSL = na
+var float positionTP1 = na
+var float positionLots = na
+var bool tp1Hit = false
+var float trailingSL = na
+
+// Track swing lows/highs for trailing (using LTF)
+var float trailSwingLow = na
+var float trailSwingHigh = na
+
+if not na(swingLowLTF)
+    trailSwingLow := swingLowLTF
+if not na(swingHighLTF)
+    trailSwingHigh := swingHighLTF
+
+// Entry
+if longSignal and not longSignal[1] and not inPosition
+    inPosition := true
+    isLongPosition := true
+    positionEntry := entryPrice
+    positionSL := stopLoss
+    positionTP1 := takeProfit1
+    positionLots := lotSize
+    tp1Hit := false
+    trailingSL := na
+
+if shortSignal and not shortSignal[1] and not inPosition
+    inPosition := true
+    isLongPosition := false
+    positionEntry := entryPrice
+    positionSL := stopLoss
+    positionTP1 := takeProfit1
+    positionLots := lotSize
+    tp1Hit := false
+    trailingSL := na
+
+// Position Management
+if inPosition
+    if isLongPosition
+        // Check TP1 hit
+        if not tp1Hit and high >= positionTP1
+            tp1Hit := true
+            // Move to breakeven
+            trailingSL := positionEntry + pipsToPrice(i_beOffset)
+
+        // Update trailing stop based on structure (after TP1)
+        if tp1Hit and not na(trailSwingLow)
+            newTrailSL = trailSwingLow - atr * i_trailBuffer
+            // Only move up, never down, and never below breakeven
+            if na(trailingSL) or (newTrailSL > trailingSL and newTrailSL >= positionEntry)
+                trailingSL := newTrailSL
+
+        // Check stop out
+        currentSL = tp1Hit and not na(trailingSL) ? trailingSL : positionSL
+        if low <= currentSL
+            inPosition := false
+            // Track loss
+            if close < positionEntry
+                dailyLosses := dailyLosses + 1
+                lastLossBar := bar_index
+    else
+        // Short position
+        if not tp1Hit and low <= positionTP1
+            tp1Hit := true
+            trailingSL := positionEntry - pipsToPrice(i_beOffset)
+
+        if tp1Hit and not na(trailSwingHigh)
+            newTrailSL = trailSwingHigh + atr * i_trailBuffer
+            if na(trailingSL) or (newTrailSL < trailingSL and newTrailSL <= positionEntry)
+                trailingSL := newTrailSL
+
+        currentSL = tp1Hit and not na(trailingSL) ? trailingSL : positionSL
+        if high >= currentSL
+            inPosition := false
+            if close > positionEntry
+                dailyLosses := dailyLosses + 1
+                lastLossBar := bar_index
+
+// ============================================================================
+// SECTION 13: ALERT MESSAGES (PINECONNECTOR FORMAT)
+// ============================================================================
+
+// Build entry alert message
+buildEntryAlert(isLong, lots, sl, tp) =>
+    direction = isLong ? "buy" : "sell"
+    i_licenseID + "," + direction + "," + i_symbol + ",risk=" + str.tostring(lots, "#.##") + ",sl=" + str.tostring(sl, "#.##") + ",tp=" + str.tostring(tp, "#.##")
+
+// Build partial close alert
+buildPartialCloseAlert(isLong, lotsToClose) =>
+    cmd = isLong ? "closelongvol" : "closeshortvol"
+    i_licenseID + "," + cmd + "," + i_symbol + ",risk=" + str.tostring(lotsToClose, "#.##")
+
+// Build SL update alert
+buildSLUpdateAlert(isLong, newSL) =>
+    cmd = isLong ? "newsltplong" : "newsltpshort"
+    i_licenseID + "," + cmd + "," + i_symbol + ",sl=" + str.tostring(newSL, "#.##")
+
+// --- Generate Alerts ---
+// Entry Alert
+longEntryAlert = longSignal and not longSignal[1] and str.length(i_licenseID) > 0
+shortEntryAlert = shortSignal and not shortSignal[1] and str.length(i_licenseID) > 0
+
+if longEntryAlert
+    alert(buildEntryAlert(true, lotSize, stopLoss, takeProfit1), alert.freq_once_per_bar)
+
+if shortEntryAlert
+    alert(buildEntryAlert(false, lotSize, stopLoss, takeProfit1), alert.freq_once_per_bar)
+
+// TP1 Hit Alert (partial close + BE)
+var bool tp1AlertSent = false
+if inPosition and tp1Hit and not tp1Hit[1] and str.length(i_licenseID) > 0
+    partialLots = positionLots * (i_tp1ClosePercent / 100)
+    alert(buildPartialCloseAlert(isLongPosition, partialLots), alert.freq_once_per_bar)
+    alert(buildSLUpdateAlert(isLongPosition, trailingSL), alert.freq_once_per_bar)
+    tp1AlertSent := true
+else if not inPosition
+    tp1AlertSent := false
+
+// Trailing SL Update Alert
+var float lastAlertedSL = na
+if inPosition and tp1Hit and not na(trailingSL) and trailingSL != lastAlertedSL and str.length(i_licenseID) > 0
+    alert(buildSLUpdateAlert(isLongPosition, trailingSL), alert.freq_once_per_bar)
+    lastAlertedSL := trailingSL
+
+// ============================================================================
+// SECTION 14: VISUAL OUTPUT
+// ============================================================================
+
+// --- Draw Order Blocks ---
+if i_showOB and barstate.islast
+    // Clean up old boxes
+    for ob in orderBlocks
+        if not ob.isMitigated and bar_index - ob.startBar < 200
+            boxColor = ob.isBullish ? color.new(color.blue, 80) : color.new(color.red, 80)
+            borderColor = ob.isBullish ? color.blue : color.red
+            box.new(ob.startBar, ob.top, bar_index + 10, ob.bottom,
+                 bgcolor=boxColor, border_color=borderColor, border_width=1)
+
+// --- Draw FVGs ---
+if i_showFVG and barstate.islast
+    for fvg in fvgList
+        if not fvg.isFilled and bar_index - fvg.formationBar < 200
+            boxColor = fvg.isBullish ? color.new(color.green, 85) : color.new(color.orange, 85)
+            box.new(fvg.formationBar, fvg.top, bar_index + 10, fvg.bottom,
+                 bgcolor=boxColor, border_color=color.new(color.gray, 50), border_width=1)
+
+// --- Draw Liquidity Levels ---
+if i_showLiquidity and barstate.islast
+    for level in liquidityLevels
+        if level.touchCount >= 2 and not level.isSwept and bar_index - level.lastBar < 200
+            lineColor = level.isBuyside ? color.new(color.red, 30) : color.new(color.green, 30)
+            line.new(level.firstBar, level.price, bar_index + 10, level.price,
+                 color=lineColor, style=line.style_dashed, width=1)
+
+// --- Draw Entry Signals ---
+plotshape(i_showSignals and longSignal and not longSignal[1], title="Long Signal",
+     style=shape.triangleup, location=location.belowbar,
+     color=color.green, size=size.normal, text="LONG")
+
+plotshape(i_showSignals and shortSignal and not shortSignal[1], title="Short Signal",
+     style=shape.triangledown, location=location.abovebar,
+     color=color.red, size=size.normal, text="SHORT")
+
+// --- Draw SL/TP Lines for Active Position ---
+if inPosition
+    currentSL = tp1Hit and not na(trailingSL) ? trailingSL : positionSL
+    slColor = tp1Hit ? color.blue : color.red
+
+    // SL Line
+    line.new(bar_index - 1, currentSL, bar_index + 5, currentSL,
+         color=slColor, style=line.style_solid, width=2)
+
+    // TP1 Line (if not hit)
+    if not tp1Hit
+        line.new(bar_index - 1, positionTP1, bar_index + 5, positionTP1,
+             color=color.green, style=line.style_solid, width=2)
+
+// --- Info Table ---
+if i_showTable
+    var table infoTable = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 80), border_width=1)
+
+    if barstate.islast
+        // Header
+        table.cell(infoTable, 0, 0, "SMC System", text_color=color.white, text_size=size.small)
+        table.cell(infoTable, 1, 0, "XAUUSD", text_color=color.yellow, text_size=size.small)
+
+        // HTF Bias
+        biasText = htfBias == 1 ? "BULLISH" : htfBias == -1 ? "BEARISH" : "NEUTRAL"
+        biasColor = htfBias == 1 ? color.green : htfBias == -1 ? color.red : color.gray
+        table.cell(infoTable, 0, 1, "HTF Bias", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 1, biasText, text_color=biasColor, text_size=size.tiny)
+
+        // Confluence Score
+        currentConfluence = htfBias == 1 ? bullishConfluence : bearishConfluence
+        scoreColor = currentConfluence.total >= 90 ? color.green : currentConfluence.total >= 70 ? color.yellow : color.red
+        table.cell(infoTable, 0, 2, "Confluence", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 2, str.tostring(currentConfluence.total, "#.#") + "/100", text_color=scoreColor, text_size=size.tiny)
+
+        // Setup Tier
+        tierColor = currentConfluence.tier == "A+" ? color.green : currentConfluence.tier == "A" ? color.lime : currentConfluence.tier == "B" ? color.yellow : color.red
+        table.cell(infoTable, 0, 3, "Tier", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 3, currentConfluence.tier, text_color=tierColor, text_size=size.tiny)
+
+        // Session
+        sessionText = inLondonNYOverlap ? "OVERLAP" : inNYSession ? "NY" : inLondonSession ? "LONDON" : "OFF"
+        sessionColor = inLondonNYOverlap ? color.green : (inNYSession or inLondonSession) ? color.yellow : color.red
+        table.cell(infoTable, 0, 4, "Session", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 4, sessionText, text_color=sessionColor, text_size=size.tiny)
+
+        // Trading Status
+        statusText = not tradingEnabled ? "DISABLED" : inCooldown ? "COOLDOWN" : not allFiltersPassed ? "FILTERED" : "ACTIVE"
+        statusColor = statusText == "ACTIVE" ? color.green : color.red
+        table.cell(infoTable, 0, 5, "Status", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 5, statusText, text_color=statusColor, text_size=size.tiny)
+
+        // Daily Losses
+        lossColor = dailyLosses >= i_maxDailyLosses ? color.red : dailyLosses > 0 ? color.orange : color.green
+        table.cell(infoTable, 0, 6, "Daily Losses", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 6, str.tostring(dailyLosses) + "/" + str.tostring(i_maxDailyLosses), text_color=lossColor, text_size=size.tiny)
+
+        // Position Status
+        posText = inPosition ? (isLongPosition ? "LONG" : "SHORT") : "FLAT"
+        posColor = inPosition ? (isLongPosition ? color.green : color.red) : color.gray
+        table.cell(infoTable, 0, 7, "Position", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 7, posText, text_color=posColor, text_size=size.tiny)
+
+        // TP1 Status
+        if inPosition
+            tp1Text = tp1Hit ? "HIT - TRAILING" : "PENDING"
+            tp1Color = tp1Hit ? color.green : color.yellow
+            table.cell(infoTable, 0, 8, "TP1", text_color=color.white, text_size=size.tiny)
+            table.cell(infoTable, 1, 8, tp1Text, text_color=tp1Color, text_size=size.tiny)
+
+        // Premium/Discount
+        pdText = isPremium ? "PREMIUM" : isDiscount ? "DISCOUNT" : "EQUILIBRIUM"
+        pdColor = isPremium ? color.red : isDiscount ? color.green : color.gray
+        table.cell(infoTable, 0, 9, "Zone", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 9, pdText, text_color=pdColor, text_size=size.tiny)
+
+// ============================================================================
+// SECTION 15: STANDARD ALERTS (Non-PineConnector)
+// ============================================================================
+
+// Alert conditions for users without PineConnector
+alertcondition(longSignal and not longSignal[1], title="Long Entry Signal",
+     message="XAUUSD LONG - Tier: {{plot_0}} - Confluence: {{plot_1}}")
+
+alertcondition(shortSignal and not shortSignal[1], title="Short Entry Signal",
+     message="XAUUSD SHORT - Tier: {{plot_0}} - Confluence: {{plot_1}}")
+
+alertcondition(inPosition and tp1Hit and not tp1Hit[1], title="TP1 Hit - Move to BE",
+     message="XAUUSD TP1 Hit - Close 50%, Move SL to Breakeven")
+
+alertcondition(dailyLosses >= i_maxDailyLosses, title="Daily Loss Limit",
+     message="XAUUSD - Daily loss limit reached. Trading disabled for today.")
+
+// Plot values for alert messages
+plot(longSignal ? bullishConfluence.total : shortSignal ? bearishConfluence.total : 0, title="Confluence Score", display=display.none)
+plot(series=0, title="Tier Placeholder", display=display.none)
+
+// ============================================================================
+// END OF SCRIPT
+// ============================================================================
