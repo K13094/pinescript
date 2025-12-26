@@ -1,0 +1,609 @@
+// This Pine Script™ source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// XAUUSD Elite Trend-Pullback Strategy
+// Version 1.0 - Institutional Grade Trading System
+//
+// CORE PHILOSOPHY:
+// 1. Trade ONLY with the trend (all timeframes aligned)
+// 2. Enter on PULLBACKS to optimal zones (not breakouts)
+// 3. Use structure-based stops with liquidity sweep protection
+// 4. Let winners run with trailing stops
+// 5. Risk exactly 1% per trade with dynamic position sizing
+
+//@version=6
+strategy("XAUUSD Elite v1.0",
+     overlay = true,
+     pyramiding = 0,
+     initial_capital = 100000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 100,
+     commission_type = strategy.commission.cash_per_order,
+     commission_value = 7,
+     slippage = 3,
+     process_orders_on_close = false,
+     calc_on_every_tick = true,
+     max_boxes_count = 100,
+     max_lines_count = 100,
+     use_bar_magnifier = true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              STRATEGY INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ─── Risk Management ───
+g_risk = "═══ RISK MANAGEMENT ═══"
+i_account = input.float(100000, "Account Size ($)", minval=1000, group=g_risk)
+i_riskPct = input.float(1.0, "Risk Per Trade (%)", minval=0.25, maxval=5, step=0.25, group=g_risk)
+i_maxRisk = input.float(1000, "Max Risk Per Trade ($)", minval=100, group=g_risk)
+i_contractSize = input.float(100, "Contract Size (oz/lot)", minval=1, group=g_risk)
+
+// ─── Trend Settings ───
+g_trend = "═══ TREND DETECTION ═══"
+i_htf1 = input.timeframe("D", "Primary Trend TF (Daily)", group=g_trend)
+i_htf2 = input.timeframe("240", "Secondary Trend TF (4H)", group=g_trend)
+i_trendMA = input.int(21, "Trend EMA Period", minval=10, maxval=50, group=g_trend)
+i_requireBothHTF = input.bool(true, "Require Both HTF Aligned", group=g_trend)
+
+// ─── Entry Zone (OTE) ───
+g_ote = "═══ OPTIMAL ENTRY ZONE ═══"
+i_swingLen = input.int(10, "Swing Detection Length", minval=3, maxval=20, group=g_ote)
+i_oteUpper = input.float(0.618, "OTE Zone Upper (Fib)", minval=0.5, maxval=0.75, step=0.01, group=g_ote)
+i_oteLower = input.float(0.786, "OTE Zone Lower (Fib)", minval=0.7, maxval=0.9, step=0.01, group=g_ote)
+i_zoneBuffer = input.float(0.5, "Zone Buffer (ATR mult)", minval=0.1, maxval=1.5, step=0.1, group=g_ote)
+
+// ─── Entry Triggers ───
+g_entry = "═══ ENTRY TRIGGERS ═══"
+i_entryType = input.string("Engulfing + Momentum", "Entry Pattern",
+     options=["Any Bullish/Bearish", "Engulfing Only", "Engulfing + Momentum", "Break of Structure"], group=g_entry)
+i_requireOB = input.bool(true, "Require Order Block", group=g_entry)
+i_obAge = input.int(20, "Max OB Age (bars)", minval=5, maxval=50, group=g_entry)
+
+// ─── Stop Loss ───
+g_sl = "═══ STOP LOSS ═══"
+i_slType = input.string("Swing + Buffer", "SL Placement",
+     options=["Swing + Buffer", "ATR Multiple", "Fixed Pips"], group=g_sl)
+i_slBuffer = input.float(1.0, "SL Buffer (ATR mult)", minval=0.3, maxval=2.0, step=0.1, group=g_sl)
+i_slATR = input.float(2.0, "SL ATR Multiple", minval=1.0, maxval=4.0, step=0.25, group=g_sl)
+i_slFixed = input.float(100, "SL Fixed Pips", minval=30, maxval=300, group=g_sl)
+i_minSL = input.float(40, "Minimum SL (pips)", minval=20, maxval=100, group=g_sl)
+i_maxSL = input.float(150, "Maximum SL (pips)", minval=50, maxval=300, group=g_sl)
+
+// ─── Take Profit & Management ───
+g_tp = "═══ PROFIT MANAGEMENT ═══"
+i_tp1RR = input.float(1.0, "TP1 Risk:Reward", minval=0.5, maxval=2.0, step=0.25, group=g_tp)
+i_tp1Pct = input.float(50, "TP1 Close %", minval=25, maxval=75, step=5, group=g_tp)
+i_beRR = input.float(1.0, "Move to BE at RR", minval=0.5, maxval=2.0, step=0.25, group=g_tp)
+i_bePips = input.float(10, "BE + Pips Profit", minval=0, maxval=30, group=g_tp)
+i_trailStart = input.float(1.5, "Start Trail at RR", minval=1.0, maxval=3.0, step=0.25, group=g_tp)
+i_trailATR = input.float(1.5, "Trail Distance (ATR)", minval=0.5, maxval=3.0, step=0.25, group=g_tp)
+
+// ─── Session Filter ───
+g_session = "═══ SESSION FILTER ═══"
+i_useSession = input.bool(true, "Enable Session Filter", group=g_session)
+i_session = input.string("London + NY", "Active Sessions",
+     options=["London Only", "NY Only", "London + NY", "Overlap Only"], group=g_session)
+
+// ─── Trade Direction ───
+g_dir = "═══ TRADE DIRECTION ═══"
+i_longEnabled = input.bool(true, "Enable Longs", group=g_dir)
+i_shortEnabled = input.bool(true, "Enable Shorts", group=g_dir)
+
+// ─── Protection ───
+g_prot = "═══ PROTECTION ═══"
+i_maxDD = input.float(7, "Max Drawdown (%)", minval=3, maxval=20, group=g_prot)
+i_maxDaily = input.float(2, "Max Daily Loss (%)", minval=1, maxval=5, group=g_prot)
+i_maxTrades = input.int(3, "Max Trades/Day", minval=1, maxval=10, group=g_prot)
+i_cooldown = input.int(5, "Cooldown After Loss (bars)", minval=0, maxval=20, group=g_prot)
+
+// ─── Visuals ───
+g_vis = "═══ VISUALS ═══"
+i_showZones = input.bool(true, "Show OTE Zones", group=g_vis)
+i_showOB = input.bool(true, "Show Order Blocks", group=g_vis)
+i_showSignals = input.bool(true, "Show Entry Signals", group=g_vis)
+i_showTable = input.bool(true, "Show Info Table", group=g_vis)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              CORE CALCULATIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ATR
+atr = ta.atr(14)
+pipSize = 0.1
+toPips(float p) => p / pipSize
+toPrice(float p) => p * pipSize
+
+// EMAs for trend
+ema21 = ta.ema(close, i_trendMA)
+ema50 = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                           MULTI-TIMEFRAME TREND
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Daily Trend
+htf1_close = request.security(syminfo.tickerid, i_htf1, close, lookahead=barmerge.lookahead_off)
+htf1_ema = request.security(syminfo.tickerid, i_htf1, ta.ema(close, i_trendMA), lookahead=barmerge.lookahead_off)
+htf1_ema50 = request.security(syminfo.tickerid, i_htf1, ta.ema(close, 50), lookahead=barmerge.lookahead_off)
+
+htf1_bull = htf1_close > htf1_ema and htf1_ema > htf1_ema50
+htf1_bear = htf1_close < htf1_ema and htf1_ema < htf1_ema50
+
+// 4H Trend
+htf2_close = request.security(syminfo.tickerid, i_htf2, close, lookahead=barmerge.lookahead_off)
+htf2_ema = request.security(syminfo.tickerid, i_htf2, ta.ema(close, i_trendMA), lookahead=barmerge.lookahead_off)
+htf2_ema50 = request.security(syminfo.tickerid, i_htf2, ta.ema(close, 50), lookahead=barmerge.lookahead_off)
+
+htf2_bull = htf2_close > htf2_ema and htf2_ema > htf2_ema50
+htf2_bear = htf2_close < htf2_ema and htf2_ema < htf2_ema50
+
+// Combined Trend
+trendBull = i_requireBothHTF ? (htf1_bull and htf2_bull) : (htf1_bull or htf2_bull)
+trendBear = i_requireBothHTF ? (htf1_bear and htf2_bear) : (htf1_bear or htf2_bear)
+
+// LTF Trend (entry timeframe)
+ltfBull = close > ema21 and ema21 > ema50
+ltfBear = close < ema21 and ema21 < ema50
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                           SWING DETECTION & OTE ZONE
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Find swing highs and lows
+swingHigh = ta.pivothigh(high, i_swingLen, i_swingLen)
+swingLow = ta.pivotlow(low, i_swingLen, i_swingLen)
+
+// Track current swing points
+var float lastSwingHigh = na
+var float lastSwingLow = na
+var int lastSwingHighBar = na
+var int lastSwingLowBar = na
+
+if not na(swingHigh)
+    lastSwingHigh := swingHigh
+    lastSwingHighBar := bar_index - i_swingLen
+
+if not na(swingLow)
+    lastSwingLow := swingLow
+    lastSwingLowBar := bar_index - i_swingLen
+
+// Calculate OTE zones (Fibonacci retracement)
+// For bullish: OTE is between 61.8% and 78.6% retracement from swing low to swing high
+// For bearish: OTE is between 61.8% and 78.6% retracement from swing high to swing low
+
+bullRange = not na(lastSwingHigh) and not na(lastSwingLow) and lastSwingHighBar > lastSwingLowBar ? lastSwingHigh - lastSwingLow : na
+bearRange = not na(lastSwingHigh) and not na(lastSwingLow) and lastSwingLowBar > lastSwingHighBar ? lastSwingHigh - lastSwingLow : na
+
+// Bullish OTE Zone (price retracing down into the zone)
+bullOteTop = not na(bullRange) ? lastSwingHigh - bullRange * i_oteUpper : na
+bullOteBot = not na(bullRange) ? lastSwingHigh - bullRange * i_oteLower : na
+inBullOte = not na(bullOteTop) and not na(bullOteBot) and low <= bullOteTop and close >= bullOteBot
+
+// Bearish OTE Zone (price retracing up into the zone)
+bearOteBot = not na(bearRange) ? lastSwingLow + bearRange * i_oteUpper : na
+bearOteTop = not na(bearRange) ? lastSwingLow + bearRange * i_oteLower : na
+inBearOte = not na(bearOteBot) and not na(bearOteTop) and high >= bearOteBot and close <= bearOteTop
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              ORDER BLOCK DETECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+type OB
+    float top
+    float bottom
+    int bar
+    bool bull
+    bool valid
+
+var array<OB> orderBlocks = array.new<OB>()
+
+// Detect Order Blocks
+bullOB = close > open and close > high[1] and close[1] < open[1] and (close - open) > atr * 0.3
+bearOB = close < open and close < low[1] and close[1] > open[1] and (open - close) > atr * 0.3
+
+if bullOB
+    newOB = OB.new(high[1], low[1], bar_index - 1, true, true)
+    array.push(orderBlocks, newOB)
+    if array.size(orderBlocks) > 30
+        array.shift(orderBlocks)
+
+if bearOB
+    newOB = OB.new(high[1], low[1], bar_index - 1, false, true)
+    array.push(orderBlocks, newOB)
+    if array.size(orderBlocks) > 30
+        array.shift(orderBlocks)
+
+// Check if price is at valid OB
+atBullishOB() =>
+    result = false
+    obLevel = float(na)
+    if array.size(orderBlocks) > 0
+        for i = array.size(orderBlocks) - 1 to 0
+            ob = array.get(orderBlocks, i)
+            age = bar_index - ob.bar
+            if ob.valid and ob.bull and age <= i_obAge
+                buffer = atr * i_zoneBuffer
+                if low <= ob.top + buffer and close >= ob.bottom
+                    result := true
+                    obLevel := ob.bottom
+                    break
+    [result, obLevel]
+
+atBearishOB() =>
+    result = false
+    obLevel = float(na)
+    if array.size(orderBlocks) > 0
+        for i = array.size(orderBlocks) - 1 to 0
+            ob = array.get(orderBlocks, i)
+            age = bar_index - ob.bar
+            if ob.valid and not ob.bull and age <= i_obAge
+                buffer = atr * i_zoneBuffer
+                if high >= ob.bottom - buffer and close <= ob.top
+                    result := true
+                    obLevel := ob.top
+                    break
+    [result, obLevel]
+
+[atBullOB, bullOBLevel] = atBullishOB()
+[atBearOB, bearOBLevel] = atBearishOB()
+
+// Invalidate mitigated OBs
+if array.size(orderBlocks) > 0
+    for i = array.size(orderBlocks) - 1 to 0
+        ob = array.get(orderBlocks, i)
+        if ob.bull and low < ob.bottom
+            ob.valid := false
+        if not ob.bull and high > ob.top
+            ob.valid := false
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              ENTRY TRIGGERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Candle patterns
+bullCandle = close > open
+bearCandle = close < open
+bodySize = math.abs(close - open)
+
+// Engulfing
+bullEngulf = close > open and close > high[1] and open <= low[1] and bodySize > atr * 0.3
+bearEngulf = close < open and close < low[1] and open >= high[1] and bodySize > atr * 0.3
+
+// Momentum (RSI)
+rsi = ta.rsi(close, 14)
+bullMomentum = rsi > rsi[1] and rsi > 40 and rsi < 70
+bearMomentum = rsi < rsi[1] and rsi < 60 and rsi > 30
+
+// Break of Structure
+bos_bull = close > ta.highest(high[1], 5)
+bos_bear = close < ta.lowest(low[1], 5)
+
+// Combined entry triggers
+bullTrigger = i_entryType == "Any Bullish/Bearish" ? bullCandle :
+              i_entryType == "Engulfing Only" ? bullEngulf :
+              i_entryType == "Engulfing + Momentum" ? (bullEngulf and bullMomentum) :
+              i_entryType == "Break of Structure" ? bos_bull : bullCandle
+
+bearTrigger = i_entryType == "Any Bullish/Bearish" ? bearCandle :
+              i_entryType == "Engulfing Only" ? bearEngulf :
+              i_entryType == "Engulfing + Momentum" ? (bearEngulf and bearMomentum) :
+              i_entryType == "Break of Structure" ? bos_bear : bearCandle
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              SESSION FILTER
+// ══════════════════════════════════════════════════════════════════════════════
+
+hourEST = hour(time, "America/New_York")
+
+londonActive = hourEST >= 3 and hourEST < 12
+nyActive = hourEST >= 8 and hourEST < 17
+overlapActive = hourEST >= 8 and hourEST < 12
+
+sessionOK = not i_useSession ? true :
+            i_session == "London Only" ? londonActive :
+            i_session == "NY Only" ? nyActive :
+            i_session == "London + NY" ? (londonActive or nyActive) :
+            i_session == "Overlap Only" ? overlapActive : true
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              RISK MANAGEMENT
+// ══════════════════════════════════════════════════════════════════════════════
+
+var float peakEquity = strategy.initial_capital
+var float dailyStart = strategy.initial_capital
+var int dailyTrades = 0
+var int lastLossBar = 0
+
+if strategy.equity > peakEquity
+    peakEquity := strategy.equity
+
+drawdown = (peakEquity - strategy.equity) / peakEquity * 100
+
+newDay = ta.change(dayofweek) != 0
+if newDay
+    dailyStart := strategy.equity
+    dailyTrades := 0
+
+dailyPnL = strategy.equity - dailyStart
+dailyLossPct = dailyPnL < 0 ? math.abs(dailyPnL) / dailyStart * 100 : 0
+
+canTrade = drawdown < i_maxDD and dailyLossPct < i_maxDaily and dailyTrades < i_maxTrades
+cooledDown = bar_index >= lastLossBar + i_cooldown
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              STOP LOSS CALCULATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+calcSL(bool isLong) =>
+    sl = float(na)
+    buffer = atr * i_slBuffer
+
+    if i_slType == "Swing + Buffer"
+        if isLong
+            recentLow = ta.lowest(low, 20)
+            sl := recentLow - buffer
+        else
+            recentHigh = ta.highest(high, 20)
+            sl := recentHigh + buffer
+    else if i_slType == "ATR Multiple"
+        sl := isLong ? close - atr * i_slATR : close + atr * i_slATR
+    else
+        sl := isLong ? close - toPrice(i_slFixed) : close + toPrice(i_slFixed)
+
+    // Apply min/max
+    dist = math.abs(close - sl)
+    minDist = toPrice(i_minSL)
+    maxDist = toPrice(i_maxSL)
+
+    if dist < minDist
+        sl := isLong ? close - minDist : close + minDist
+    if dist > maxDist
+        sl := isLong ? close - maxDist : close + maxDist
+
+    sl
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              POSITION SIZING
+// ══════════════════════════════════════════════════════════════════════════════
+
+calcSize(float slPrice) =>
+    slDist = math.abs(close - slPrice)
+    slPips = toPips(slDist)
+    riskAmt = math.min(i_account * (i_riskPct / 100), i_maxRisk)
+    pipValue = pipSize * i_contractSize
+    lots = slPips > 0 ? riskAmt / (slPips * pipValue) : 0.01
+    math.max(0.01, math.min(10.0, lots))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              ENTRY CONDITIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+inLong = strategy.position_size > 0
+inShort = strategy.position_size < 0
+flat = not inLong and not inShort
+
+// Long conditions
+longSetup = trendBull and (inBullOte or (i_requireOB and atBullOB))
+longEntry = i_longEnabled and flat and canTrade and cooledDown and sessionOK and longSetup and bullTrigger
+
+// Short conditions
+shortSetup = trendBear and (inBearOte or (i_requireOB and atBearOB))
+shortEntry = i_shortEnabled and flat and canTrade and cooledDown and sessionOK and shortSetup and bearTrigger
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              STRATEGY EXECUTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+var float entryPrice = na
+var float stopLoss = na
+var float takeProfit1 = na
+var float takeProfit2 = na
+var float currentSL = na
+var int entryBar = na
+var float posSize = na
+var bool tp1Hit = false
+var bool beActive = false
+var bool trailActive = false
+var float highestSince = na
+var float lowestSince = na
+
+// Long Entry
+if longEntry
+    entryPrice := close
+    stopLoss := calcSL(true)
+    slDist = math.abs(close - stopLoss)
+    takeProfit1 := close + slDist * i_tp1RR
+    takeProfit2 := close + slDist * 3.0
+    currentSL := stopLoss
+    posSize := calcSize(stopLoss)
+    entryBar := bar_index
+    tp1Hit := false
+    beActive := false
+    trailActive := false
+    highestSince := close
+
+    strategy.entry("Long", strategy.long, qty=posSize)
+    strategy.exit("LongTP1", "Long", qty_percent=i_tp1Pct, limit=takeProfit1, stop=stopLoss)
+    strategy.exit("LongTP2", "Long", limit=takeProfit2, stop=stopLoss)
+
+    dailyTrades += 1
+
+// Short Entry
+if shortEntry
+    entryPrice := close
+    stopLoss := calcSL(false)
+    slDist = math.abs(stopLoss - close)
+    takeProfit1 := close - slDist * i_tp1RR
+    takeProfit2 := close - slDist * 3.0
+    currentSL := stopLoss
+    posSize := calcSize(stopLoss)
+    entryBar := bar_index
+    tp1Hit := false
+    beActive := false
+    trailActive := false
+    lowestSince := close
+
+    strategy.entry("Short", strategy.short, qty=posSize)
+    strategy.exit("ShortTP1", "Short", qty_percent=i_tp1Pct, limit=takeProfit1, stop=stopLoss)
+    strategy.exit("ShortTP2", "Short", limit=takeProfit2, stop=stopLoss)
+
+    dailyTrades += 1
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                           TRADE MANAGEMENT
+// ══════════════════════════════════════════════════════════════════════════════
+
+if inLong or inShort
+    // Track extremes
+    if inLong
+        highestSince := math.max(nz(highestSince, close), high)
+    if inShort
+        lowestSince := math.min(nz(lowestSince, close), low)
+
+    // Calculate current RR
+    slDist = math.abs(entryPrice - stopLoss)
+    currentProfit = inLong ? close - entryPrice : entryPrice - close
+    currentRR = slDist > 0 ? currentProfit / slDist : 0
+
+    // Breakeven
+    if not beActive and currentRR >= i_beRR
+        beActive := true
+        newSL = inLong ? entryPrice + toPrice(i_bePips) : entryPrice - toPrice(i_bePips)
+        currentSL := newSL
+        if inLong
+            strategy.exit("LongBE", "Long", stop=currentSL)
+        if inShort
+            strategy.exit("ShortBE", "Short", stop=currentSL)
+
+    // Trailing
+    if beActive and currentRR >= i_trailStart
+        trailActive := true
+        trailDist = atr * i_trailATR
+        newTrail = inLong ? highestSince - trailDist : lowestSince + trailDist
+
+        if inLong and newTrail > currentSL
+            currentSL := newTrail
+            strategy.exit("LongTrail", "Long", stop=currentSL)
+        if inShort and newTrail < currentSL
+            currentSL := newTrail
+            strategy.exit("ShortTrail", "Short", stop=currentSL)
+
+// Reset on close
+if flat and (inLong[1] or inShort[1])
+    tp1Hit := false
+    beActive := false
+    trailActive := false
+    highestSince := na
+    lowestSince := na
+
+    // Track losses for cooldown
+    if strategy.closedtrades > 0
+        lastPnL = strategy.closedtrades.profit(strategy.closedtrades - 1)
+        if lastPnL < 0
+            lastLossBar := bar_index
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                              VISUALS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Entry signals
+plotshape(i_showSignals and longEntry, "Long Signal", shape.triangleup, location.belowbar, color.green, size=size.normal)
+plotshape(i_showSignals and shortEntry, "Short Signal", shape.triangledown, location.abovebar, color.red, size=size.normal)
+
+// Swing points
+plotshape(not na(swingHigh), "Swing High", shape.circle, location.abovebar, color.new(color.red, 50), size=size.tiny, offset=-i_swingLen)
+plotshape(not na(swingLow), "Swing Low", shape.circle, location.belowbar, color.new(color.green, 50), size=size.tiny, offset=-i_swingLen)
+
+// EMAs
+plot(ema21, "EMA 21", color.new(color.blue, 50), 1)
+plot(ema50, "EMA 50", color.new(color.orange, 50), 1)
+
+// Position lines
+plot(inLong or inShort ? currentSL : na, "Stop Loss", color.red, 2, plot.style_linebr)
+plot(inLong or inShort ? takeProfit1 : na, "TP1", color.green, 1, plot.style_linebr)
+plot(inLong or inShort ? entryPrice : na, "Entry", color.blue, 1, plot.style_linebr)
+
+// Trend background
+bgColor = trendBull ? color.new(color.green, 93) : trendBear ? color.new(color.red, 93) : na
+bgcolor(bgColor)
+
+// OTE Zones
+var box bullOteBox = na
+var box bearOteBox = na
+
+if i_showZones and barstate.islast
+    if not na(bullOteTop) and not na(bullOteBot) and trendBull
+        if not na(bullOteBox)
+            box.delete(bullOteBox)
+        bullOteBox := box.new(bar_index - 50, bullOteTop, bar_index + 10, bullOteBot,
+             border_color=color.new(color.green, 60), bgcolor=color.new(color.green, 85))
+
+    if not na(bearOteTop) and not na(bearOteBot) and trendBear
+        if not na(bearOteBox)
+            box.delete(bearOteBox)
+        bearOteBox := box.new(bar_index - 50, bearOteTop, bar_index + 10, bearOteBot,
+             border_color=color.new(color.red, 60), bgcolor=color.new(color.red, 85))
+
+// Info Table
+if i_showTable and barstate.islast
+    var table tbl = table.new(position.top_right, 2, 12, color.new(color.black, 80))
+
+    table.cell(tbl, 0, 0, "ELITE v1.0", text_color=color.yellow, text_size=size.small)
+    table.cell(tbl, 1, 0, syminfo.ticker, text_color=color.white, text_size=size.small)
+
+    htf1Txt = htf1_bull ? "BULL" : htf1_bear ? "BEAR" : "—"
+    htf1Col = htf1_bull ? color.green : htf1_bear ? color.red : color.gray
+    table.cell(tbl, 0, 1, "Daily", text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, 1, htf1Txt, text_color=htf1Col, text_size=size.tiny)
+
+    htf2Txt = htf2_bull ? "BULL" : htf2_bear ? "BEAR" : "—"
+    htf2Col = htf2_bull ? color.green : htf2_bear ? color.red : color.gray
+    table.cell(tbl, 0, 2, "4H", text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, 2, htf2Txt, text_color=htf2Col, text_size=size.tiny)
+
+    trendTxt = trendBull ? "BULLISH" : trendBear ? "BEARISH" : "NEUTRAL"
+    trendCol = trendBull ? color.green : trendBear ? color.red : color.gray
+    table.cell(tbl, 0, 3, "Trend", text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, 3, trendTxt, text_color=trendCol, text_size=size.tiny)
+
+    table.cell(tbl, 0, 4, "In OTE", text_color=color.white, text_size=size.tiny)
+    oteTxt = inBullOte ? "BULL" : inBearOte ? "BEAR" : "NO"
+    oteCol = inBullOte ? color.green : inBearOte ? color.red : color.gray
+    table.cell(tbl, 1, 4, oteTxt, text_color=oteCol, text_size=size.tiny)
+
+    table.cell(tbl, 0, 5, "At OB", text_color=color.white, text_size=size.tiny)
+    obTxt = atBullOB ? "BULL" : atBearOB ? "BEAR" : "NO"
+    obCol = atBullOB ? color.green : atBearOB ? color.red : color.gray
+    table.cell(tbl, 1, 5, obTxt, text_color=obCol, text_size=size.tiny)
+
+    table.cell(tbl, 0, 6, "RSI", text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, 6, str.tostring(rsi, "#.#"), text_color=color.white, text_size=size.tiny)
+
+    table.cell(tbl, 0, 7, "Session", text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, 7, sessionOK ? "ACTIVE" : "CLOSED", text_color=sessionOK ? color.green : color.red, text_size=size.tiny)
+
+    posTxt = inLong ? "LONG" : inShort ? "SHORT" : "FLAT"
+    posCol = inLong ? color.green : inShort ? color.red : color.gray
+    table.cell(tbl, 0, 8, "Position", text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, 8, posTxt, text_color=posCol, text_size=size.tiny)
+
+    table.cell(tbl, 0, 9, "Lot Size", text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, 9, str.tostring(posSize, "#.##"), text_color=color.yellow, text_size=size.tiny)
+
+    mgmtTxt = trailActive ? "TRAIL" : beActive ? "BE" : "INITIAL"
+    mgmtCol = trailActive ? color.orange : beActive ? color.green : color.gray
+    table.cell(tbl, 0, 10, "SL Mode", text_color=color.white, text_size=size.tiny)
+    table.cell(tbl, 1, 10, mgmtTxt, text_color=mgmtCol, text_size=size.tiny)
+
+    table.cell(tbl, 0, 11, "DD%", text_color=color.white, text_size=size.tiny)
+    ddCol = drawdown > 5 ? color.red : color.green
+    table.cell(tbl, 1, 11, str.tostring(drawdown, "#.#") + "%", text_color=ddCol, text_size=size.tiny)
+
+// Debug plots
+plot(toPips(math.abs(close - stopLoss)), "SL Pips", display=display.data_window)
+plot(posSize, "Lot Size", display=display.data_window)
+plot(rsi, "RSI", display=display.data_window)
+plot(inBullOte ? 1 : inBearOte ? -1 : 0, "In OTE", display=display.data_window)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//                                  END
+// ══════════════════════════════════════════════════════════════════════════════
