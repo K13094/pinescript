@@ -261,10 +261,9 @@ getHourEST() =>
 getDayOfWeek() =>
     dayofweek(time)
 
-// --- Generate Trade ID ---
-generateTradeID() =>
-    tradeIDCounter += 1
-    i_tradeIDPrefix + "_" + str.tostring(year) + str.tostring(month, "00") + str.tostring(dayofmonth, "00") + "_" + str.tostring(tradeIDCounter, "0000")
+// --- Generate Trade ID (uses bar_index for uniqueness) ---
+generateTradeID(int counter) =>
+    i_tradeIDPrefix + "_" + str.tostring(year) + str.tostring(month, "00") + str.tostring(dayofmonth, "00") + "_" + str.tostring(counter, "0000")
 
 // --- Time Decay Multiplier ---
 getDecayMultiplier(int barsAgo) =>
@@ -406,7 +405,7 @@ isDiscount  = close < equilibrium
 // SECTION 5: ORDER BLOCK DETECTION
 // ============================================================================
 
-detectOrderBlock() =>
+detectOrderBlock(int idCounter) =>
     OrderBlock ob = na
 
     if bullishBOS or bullishCHoCH
@@ -420,7 +419,6 @@ detectOrderBlock() =>
                     if candleRange >= atr * i_obMinATR and candleRange <= atr * i_obMaxATR
                         displacement = high - high[i]
                         if displacement >= atr * i_obDisplacement
-                            obIDCounter += 1
                             strengthVal = displacement >= atr * 3.0 ? 3 : displacement >= atr * 2.0 ? 2 : 1
                             ob := OrderBlock.new(
                                  top          = high[i],
@@ -431,7 +429,7 @@ detectOrderBlock() =>
                                  isMitigated  = false,
                                  mitigationBar = na,
                                  strength     = strengthVal,
-                                 id           = obIDCounter
+                                 id           = idCounter
                             )
                             break
 
@@ -445,7 +443,6 @@ detectOrderBlock() =>
                     if candleRange >= atr * i_obMinATR and candleRange <= atr * i_obMaxATR
                         displacement = low[i] - low
                         if displacement >= atr * i_obDisplacement
-                            obIDCounter += 1
                             strengthVal = displacement >= atr * 3.0 ? 3 : displacement >= atr * 2.0 ? 2 : 1
                             ob := OrderBlock.new(
                                  top          = high[i],
@@ -456,13 +453,14 @@ detectOrderBlock() =>
                                  isMitigated  = false,
                                  mitigationBar = na,
                                  strength     = strengthVal,
-                                 id           = obIDCounter
+                                 id           = idCounter
                             )
                             break
     ob
 
 // --- Add and manage Order Blocks ---
-newOB = detectOrderBlock()
+obIDCounter += 1
+newOB = detectOrderBlock(obIDCounter)
 if not na(newOB)
     // Check for duplicates before adding
     isDuplicate = false
@@ -526,14 +524,13 @@ getActiveOB(bool isBullish) =>
 // SECTION 6: FAIR VALUE GAP DETECTION
 // ============================================================================
 
-detectFVG() =>
+detectFVG(int idCounter) =>
     FairValueGap fvg = na
 
     // Bullish FVG
     bullishGap = low - high[2]
     if bullishGap > 0 and bullishGap >= atr * i_fvgMinATR and bullishGap <= atr * i_fvgMaxATR
         if close[1] > open[1]
-            fvgIDCounter += 1
             fvg := FairValueGap.new(
                  top         = low,
                  bottom      = high[2],
@@ -543,14 +540,13 @@ detectFVG() =>
                  isFilled    = false,
                  fillPercent = 0.0,
                  isInPremium = high[2] > equilibrium,
-                 id          = fvgIDCounter
+                 id          = idCounter
             )
 
     // Bearish FVG
     bearishGap = low[2] - high
     if bearishGap > 0 and bearishGap >= atr * i_fvgMinATR and bearishGap <= atr * i_fvgMaxATR
         if close[1] < open[1]
-            fvgIDCounter += 1
             fvg := FairValueGap.new(
                  top         = low[2],
                  bottom      = high,
@@ -560,12 +556,13 @@ detectFVG() =>
                  isFilled    = false,
                  fillPercent = 0.0,
                  isInPremium = low[2] > equilibrium,
-                 id          = fvgIDCounter
+                 id          = idCounter
             )
     fvg
 
 // --- Add and manage FVGs ---
-newFVG = detectFVG()
+fvgIDCounter += 1
+newFVG = detectFVG(fvgIDCounter)
 if not na(newFVG)
     // Check for duplicates
     isDuplicate = false
@@ -790,9 +787,9 @@ oteFib79 = htfBias == DIR_LONG ?
 oteZoneTop    = htfBias == DIR_LONG ? oteFib62 : htfLastSwingLow + (htfRange * 0.79)
 oteZoneBottom = htfBias == DIR_LONG ? oteFib79 : htfLastSwingLow + (htfRange * 0.62)
 
-inOTEZone = htfRange > 0 and
-            close >= math.min(oteZoneTop, oteZoneBottom) and
-            close <= math.max(oteZoneTop, oteZoneBottom)
+inOTEZone = (htfRange > 0 and
+             close >= math.min(oteZoneTop, oteZoneBottom) and
+             close <= math.max(oteZoneTop, oteZoneBottom))
 
 // ============================================================================
 // SECTION 9: CONFLUENCE SCORING ENGINE
@@ -996,18 +993,18 @@ inShortPosition = strategy.position_size < 0
 inPosition      = inLongPosition or inShortPosition
 
 // --- Long Signal Conditions (v6: short-circuit evaluation) ---
-longCondition = canTrade and
-                not inPosition and
-                bullishConfluence.isValid and
-                (not i_useHTFConfirmation or htfBias == DIR_LONG) and
-                (bullishBOS or bullishCHoCH or (inOTEZone and structureBias == DIR_LONG))
+longCondition = (canTrade and
+                 not inPosition and
+                 bullishConfluence.isValid and
+                 (not i_useHTFConfirmation or htfBias == DIR_LONG) and
+                 (bullishBOS or bullishCHoCH or (inOTEZone and structureBias == DIR_LONG)))
 
 // --- Short Signal Conditions ---
-shortCondition = canTrade and
-                 not inPosition and
-                 bearishConfluence.isValid and
-                 (not i_useHTFConfirmation or htfBias == DIR_SHORT) and
-                 (bearishBOS or bearishCHoCH or (inOTEZone and structureBias == DIR_SHORT))
+shortCondition = (canTrade and
+                  not inPosition and
+                  bearishConfluence.isValid and
+                  (not i_useHTFConfirmation or htfBias == DIR_SHORT) and
+                  (bearishBOS or bearishCHoCH or (inOTEZone and structureBias == DIR_SHORT)))
 
 // ============================================================================
 // SECTION 13: STRATEGY EXECUTION
@@ -1015,7 +1012,8 @@ shortCondition = canTrade and
 
 // --- Long Entry ---
 if longCondition
-    currentTradeID   := generateTradeID()
+    tradeIDCounter   += 1
+    currentTradeID   := generateTradeID(tradeIDCounter)
     signalEntry      := close
     signalTier       := bullishConfluence.tier
     signalTierString := bullishConfluence.tierString
@@ -1061,7 +1059,8 @@ if longCondition
 
 // --- Short Entry ---
 if shortCondition
-    currentTradeID   := generateTradeID()
+    tradeIDCounter   += 1
+    currentTradeID   := generateTradeID(tradeIDCounter)
     signalEntry      := close
     signalTier       := bearishConfluence.tier
     signalTierString := bearishConfluence.tierString
