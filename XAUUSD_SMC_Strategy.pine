@@ -1,10 +1,10 @@
 // This Pine Script™ source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © XAUUSD Smart Money Concepts Trading Strategy
-// Version 5.0 - Risk Management & Win Rate Optimization
-// Asymmetric Long/Short rules, Strict SL enforcement, Time-based exits
+// Version 6.0 - Structure-Based Stops & Patience-Focused Trading
+// Proper SL placement with liquidity sweep protection
 
 //@version=6
-strategy("XAUUSD SMC Strategy v5",
+strategy("XAUUSD SMC Strategy v6",
      overlay = true,
      pyramiding = 0,
      initial_capital = 100000,
@@ -20,247 +20,571 @@ strategy("XAUUSD SMC Strategy v5",
      max_labels_count = 500,
      use_bar_magnifier = true)
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                    MASTER CONTROL PANEL - ALL PARAMETERS                      ║
-// ║            Adjust these settings for optimization and backtesting             ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                                                                                            ║
+// ║                                    ★★★ CONTROL CENTER ★★★                                                  ║
+// ║                                                                                                            ║
+// ║   This section contains ALL adjustable parameters for strategy optimization.                               ║
+// ║   Each parameter includes a tooltip explaining what it does and how changes affect trading.                ║
+// ║                                                                                                            ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
-// ============================================================================
-// GROUP 1: ACCOUNT & RISK MANAGEMENT (CRITICAL)
-// ============================================================================
-i_accountSize         = input.float(100000, "💰 Account Size ($)", minval = 1000, step = 1000, group = "═══ 1. ACCOUNT & RISK ═══", tooltip = "Your total account size in dollars")
-i_riskPerTrade        = input.float(1.0, "⚠️ Risk Per Trade (%)", minval = 0.1, maxval = 3.0, step = 0.1, group = "═══ 1. ACCOUNT & RISK ═══", tooltip = "Maximum 1% recommended. This is the % of account risked per trade")
-i_maxDollarLoss       = input.float(1000, "🛑 Max Dollar Loss Per Trade ($)", minval = 100, maxval = 5000, step = 100, group = "═══ 1. ACCOUNT & RISK ═══", tooltip = "Hard cap on dollar loss per trade - will override other settings")
-i_maxDrawdownPercent  = input.float(7.0, "📉 Max Account Drawdown (%)", minval = 1.0, maxval = 20.0, step = 0.5, group = "═══ 1. ACCOUNT & RISK ═══", tooltip = "Stop trading when account drawdown exceeds this %")
-i_lotSize             = input.float(1.0, "📊 Base Lot Size", minval = 0.01, maxval = 10.0, step = 0.01, group = "═══ 1. ACCOUNT & RISK ═══", tooltip = "Base lot size for position sizing calculations")
-i_useRiskBasedLots    = input.bool(true, "🎯 Use Risk-Based Position Sizing", group = "═══ 1. ACCOUNT & RISK ═══", tooltip = "Calculate lot size based on risk % and stop distance")
-i_pipValue            = input.float(10.0, "💵 Pip Value per Lot ($)", minval = 1.0, maxval = 100.0, group = "═══ 1. ACCOUNT & RISK ═══", tooltip = "Dollar value per pip per standard lot for XAUUSD")
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION A: ACCOUNT & POSITION SIZING                                                                       │
+// │ Controls how much capital is risked per trade and position size calculations                               │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
-// ============================================================================
-// GROUP 2: STOP LOSS SETTINGS
-// ============================================================================
-i_slMode              = input.string("ATR", "SL Calculation Method", options = ["ATR", "Structure", "Fixed Pips"], group = "═══ 2. STOP LOSS ═══", tooltip = "Method to calculate initial stop loss distance")
-i_slATRMult           = input.float(1.5, "SL ATR Multiplier", minval = 0.5, maxval = 4.0, step = 0.1, group = "═══ 2. STOP LOSS ═══")
-i_slFixedPips         = input.float(100, "SL Fixed Pips", minval = 20, maxval = 300, step = 10, group = "═══ 2. STOP LOSS ═══")
-i_slBuffer            = input.float(10, "SL Buffer (pips)", minval = 0, maxval = 50, step = 5, group = "═══ 2. STOP LOSS ═══", tooltip = "Extra buffer added beyond structure levels")
-i_maxSLPips           = input.float(150, "🛑 Maximum SL Distance (pips)", minval = 50, maxval = 300, step = 10, group = "═══ 2. STOP LOSS ═══", tooltip = "Hard limit on stop loss distance - prevents oversized stops")
-i_enforceHardSL       = input.bool(true, "🔒 Enforce Hard Stop Loss", group = "═══ 2. STOP LOSS ═══", tooltip = "Force close if loss exceeds max - prevents slippage through stops")
+i_accountSize = input.float(100000, "Account Size ($)",
+     minval = 1000, step = 1000,
+     group = "A. ACCOUNT & POSITION SIZING",
+     tooltip = "Your total trading account size in USD.\n\n" +
+               "► HIGHER = Larger position sizes (more $ per trade)\n" +
+               "► LOWER = Smaller position sizes (less $ per trade)\n\n" +
+               "This is used to calculate risk-based lot sizing.")
 
-// ============================================================================
-// GROUP 3: TAKE PROFIT & EXIT SETTINGS
-// ============================================================================
-i_tp1RR               = input.float(1.5, "TP1 Risk:Reward Ratio", minval = 0.5, maxval = 3.0, step = 0.1, group = "═══ 3. TAKE PROFIT ═══")
-i_tp2RR               = input.float(2.5, "TP2 Risk:Reward Ratio", minval = 1.0, maxval = 5.0, step = 0.1, group = "═══ 3. TAKE PROFIT ═══")
-i_tp1ClosePercent     = input.float(60, "TP1 Close Position %", minval = 25, maxval = 100, step = 5, group = "═══ 3. TAKE PROFIT ═══", tooltip = "Percentage of position to close at TP1")
-i_useTrailingSL       = input.bool(true, "Enable Trailing Stop After TP1", group = "═══ 3. TAKE PROFIT ═══")
-i_trailATRMult        = input.float(0.5, "Trailing Stop ATR Multiplier", minval = 0.2, maxval = 2.0, step = 0.1, group = "═══ 3. TAKE PROFIT ═══")
-i_beAfterTP1          = input.bool(true, "Move to Break-Even After TP1", group = "═══ 3. TAKE PROFIT ═══")
-i_bePlusPips          = input.float(5, "Break-Even + Pips", minval = 0, maxval = 20, step = 1, group = "═══ 3. TAKE PROFIT ═══")
+i_riskPerTrade = input.float(1.0, "Risk Per Trade (%)",
+     minval = 0.25, maxval = 3.0, step = 0.25,
+     group = "A. ACCOUNT & POSITION SIZING",
+     tooltip = "Maximum percentage of account risked on each trade.\n\n" +
+               "► 0.5% = Conservative (lose 0.5% if stopped out)\n" +
+               "► 1.0% = Standard (recommended)\n" +
+               "► 2.0% = Aggressive (faster gains but bigger losses)\n\n" +
+               "Example: $100,000 account at 1% = $1,000 max loss per trade")
 
-// ============================================================================
-// GROUP 4: TIME-BASED EXITS (Close losers fast, hold winners)
-// ============================================================================
-i_useTimeExit         = input.bool(true, "⏰ Enable Time-Based Exits", group = "═══ 4. TIME EXITS ═══", tooltip = "Close losing trades after X bars")
-i_maxBarsLosing       = input.int(8, "Max Bars in Losing Trade", minval = 2, maxval = 30, step = 1, group = "═══ 4. TIME EXITS ═══", tooltip = "Close losing trades after this many bars")
-i_maxBarsBreakeven    = input.int(15, "Max Bars at Breakeven", minval = 5, maxval = 50, step = 1, group = "═══ 4. TIME EXITS ═══", tooltip = "Close trades not making progress")
-i_holdWinnersLonger   = input.bool(true, "Hold Profitable Trades Longer", group = "═══ 4. TIME EXITS ═══", tooltip = "Allow winners to run beyond time limits")
-i_useEODExit          = input.bool(false, "Close Losing Trades End of Day", group = "═══ 4. TIME EXITS ═══")
-i_eodHour             = input.int(16, "EOD Exit Hour (EST)", minval = 0, maxval = 23, group = "═══ 4. TIME EXITS ═══")
+i_maxDollarRisk = input.float(1000, "Max Dollar Risk Per Trade ($)",
+     minval = 100, maxval = 10000, step = 100,
+     group = "A. ACCOUNT & POSITION SIZING",
+     tooltip = "Hard cap on dollar amount risked per trade.\n\n" +
+               "► This overrides percentage risk if % would exceed this amount\n" +
+               "► Acts as safety net for large accounts\n\n" +
+               "Example: Even if 1% = $5,000, this caps it at $1,000")
 
-// ============================================================================
-// GROUP 5: LONG TRADE SETTINGS (52% win rate - moderate refinement)
-// ============================================================================
-i_enableLongs         = input.bool(true, "✅ Enable Long Trades", group = "═══ 5. LONG TRADES ═══")
-i_longEntryMode       = input.string("Standard", "Long Entry Mode", options = ["Aggressive", "Standard", "Conservative"], group = "═══ 5. LONG TRADES ═══", tooltip = "Aggressive=fewer filters, Conservative=more confirmation")
-i_longRequireHTF      = input.bool(true, "Long: Require HTF Bullish Bias", group = "═══ 5. LONG TRADES ═══")
-i_longRequireOB       = input.bool(true, "Long: Require Order Block", group = "═══ 5. LONG TRADES ═══")
-i_longRequireFVG      = input.bool(false, "Long: Require FVG", group = "═══ 5. LONG TRADES ═══")
-i_longRequireSweep    = input.bool(false, "Long: Require Liquidity Sweep", group = "═══ 5. LONG TRADES ═══")
-i_longRequireBOS      = input.bool(false, "Long: Require Recent BOS", group = "═══ 5. LONG TRADES ═══")
-i_longRequireMomentum = input.bool(true, "Long: Require Bullish Momentum", group = "═══ 5. LONG TRADES ═══")
-i_longTP1RR           = input.float(1.5, "Long: TP1 Risk:Reward", minval = 0.5, maxval = 3.0, step = 0.1, group = "═══ 5. LONG TRADES ═══")
-i_longTP2RR           = input.float(2.5, "Long: TP2 Risk:Reward", minval = 1.0, maxval = 5.0, step = 0.1, group = "═══ 5. LONG TRADES ═══")
+i_pipValue = input.float(10.0, "Pip Value Per Lot ($)",
+     minval = 1.0, maxval = 100.0, step = 1.0,
+     group = "A. ACCOUNT & POSITION SIZING",
+     tooltip = "Dollar value of 1 pip movement per standard lot.\n\n" +
+               "► For XAUUSD: typically $10 per pip per lot\n" +
+               "► For FOREX pairs: typically $10 per pip per lot\n\n" +
+               "This is used to calculate correct position size from risk amount")
 
-// ============================================================================
-// GROUP 6: SHORT TRADE SETTINGS (19% win rate - STRICT REFINEMENT)
-// ============================================================================
-i_enableShorts        = input.bool(true, "✅ Enable Short Trades", group = "═══ 6. SHORT TRADES ═══")
-i_shortEntryMode      = input.string("Conservative", "Short Entry Mode", options = ["Aggressive", "Standard", "Conservative", "Very Conservative"], group = "═══ 6. SHORT TRADES ═══", tooltip = "Recommend Conservative or Very Conservative for shorts")
-i_shortRequireHTF     = input.bool(true, "Short: Require HTF Bearish Bias", group = "═══ 6. SHORT TRADES ═══")
-i_shortRequireOB      = input.bool(true, "Short: Require Order Block", group = "═══ 6. SHORT TRADES ═══")
-i_shortRequireFVG     = input.bool(true, "Short: Require FVG", group = "═══ 6. SHORT TRADES ═══", tooltip = "Extra confirmation for shorts")
-i_shortRequireSweep   = input.bool(true, "Short: Require Liquidity Sweep", group = "═══ 6. SHORT TRADES ═══", tooltip = "Extra confirmation for shorts")
-i_shortRequireBOS     = input.bool(true, "Short: Require Recent BOS/CHoCH", group = "═══ 6. SHORT TRADES ═══", tooltip = "Extra confirmation for shorts")
-i_shortRequireMomentum = input.bool(true, "Short: Require Bearish Momentum", group = "═══ 6. SHORT TRADES ═══")
-i_shortRequireWeakness = input.bool(true, "Short: Require Price Weakness", group = "═══ 6. SHORT TRADES ═══", tooltip = "Price below key MAs")
-i_shortSLMultiplier   = input.float(0.8, "Short: SL Multiplier", minval = 0.5, maxval = 1.5, step = 0.1, group = "═══ 6. SHORT TRADES ═══", tooltip = "Tighter stops on shorts (multiply by this)")
-i_shortTP1RR          = input.float(1.2, "Short: TP1 Risk:Reward", minval = 0.5, maxval = 2.0, step = 0.1, group = "═══ 6. SHORT TRADES ═══", tooltip = "Take profits faster on shorts")
-i_shortTP2RR          = input.float(2.0, "Short: TP2 Risk:Reward", minval = 1.0, maxval = 3.0, step = 0.1, group = "═══ 6. SHORT TRADES ═══")
-i_shortMaxBarsLosing  = input.int(5, "Short: Max Bars Losing", minval = 2, maxval = 15, step = 1, group = "═══ 6. SHORT TRADES ═══", tooltip = "Faster exit on losing shorts")
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION B: STOP LOSS PLACEMENT (CRITICAL)                                                                  │
+// │ Controls WHERE the initial stop loss is placed - based on market structure                                 │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
-// ============================================================================
-// GROUP 7: STRUCTURE & HTF ANALYSIS
-// ============================================================================
-i_swingLength         = input.int(5, "Swing Detection Length", minval = 2, maxval = 20, group = "═══ 7. STRUCTURE ═══")
-i_atrLength           = input.int(14, "ATR Period", minval = 5, maxval = 50, group = "═══ 7. STRUCTURE ═══")
-i_structureLookback   = input.int(30, "Structure Lookback Bars", minval = 10, maxval = 100, group = "═══ 7. STRUCTURE ═══")
-i_htfTimeframe        = input.timeframe("240", "HTF Timeframe", group = "═══ 7. STRUCTURE ═══", tooltip = "Higher timeframe for bias confirmation")
-i_htfTimeframe2       = input.timeframe("D", "HTF Timeframe 2 (Daily)", group = "═══ 7. STRUCTURE ═══")
+i_slMethod = input.string("Structure + Sweep Buffer", "Stop Loss Method",
+     options = ["Structure + Sweep Buffer", "ATR-Based", "Fixed Pips", "Order Block"],
+     group = "B. STOP LOSS PLACEMENT",
+     tooltip = "How the initial stop loss level is determined.\n\n" +
+               "► STRUCTURE + SWEEP BUFFER (Recommended):\n" +
+               "   Places SL beyond the last swing low (longs) or swing high (shorts)\n" +
+               "   with extra buffer to survive liquidity sweeps by institutions.\n\n" +
+               "► ATR-BASED:\n" +
+               "   Uses Average True Range multiplier from entry price.\n" +
+               "   More dynamic but may not respect structure.\n\n" +
+               "► FIXED PIPS:\n" +
+               "   Static pip distance from entry. Simple but ignores market context.\n\n" +
+               "► ORDER BLOCK:\n" +
+               "   Places SL beyond the Order Block that triggered entry.")
 
-// ============================================================================
-// GROUP 8: ORDER BLOCK SETTINGS
-// ============================================================================
-i_obLookback          = input.int(15, "OB Lookback Bars", minval = 5, maxval = 50, group = "═══ 8. ORDER BLOCKS ═══")
-i_obProximity         = input.float(0.3, "OB Proximity (ATR mult)", minval = 0.1, maxval = 1.0, step = 0.1, group = "═══ 8. ORDER BLOCKS ═══", tooltip = "How close price must be to OB")
-i_obMinSize           = input.float(0.3, "OB Min Size (ATR mult)", minval = 0.1, maxval = 1.0, step = 0.1, group = "═══ 8. ORDER BLOCKS ═══")
-i_obRequireEngulfing  = input.bool(true, "Require Engulfing Pattern", group = "═══ 8. ORDER BLOCKS ═══", tooltip = "Stronger OB detection")
+i_swingLookback = input.int(20, "Swing Lookback (bars)",
+     minval = 5, maxval = 100, step = 5,
+     group = "B. STOP LOSS PLACEMENT",
+     tooltip = "How many bars to look back to find the key swing high/low.\n\n" +
+               "► HIGHER (30-50) = Finds stronger, more significant levels\n" +
+               "   - Wider stops, survives more volatility\n" +
+               "   - Fewer trades stopped out prematurely\n\n" +
+               "► LOWER (10-20) = Uses more recent, tighter levels\n" +
+               "   - Tighter stops, less capital at risk per trade\n" +
+               "   - More prone to being stopped by normal volatility")
 
-// ============================================================================
-// GROUP 9: FVG & SWEEP SETTINGS
-// ============================================================================
-i_fvgMinSize          = input.float(0.2, "FVG Min Size (ATR mult)", minval = 0.1, maxval = 1.0, step = 0.1, group = "═══ 9. FVG & SWEEPS ═══")
-i_fvgLookback         = input.int(20, "FVG Lookback Bars", minval = 5, maxval = 50, group = "═══ 9. FVG & SWEEPS ═══")
-i_sweepLookback       = input.int(20, "Sweep Lookback Bars", minval = 5, maxval = 50, group = "═══ 9. FVG & SWEEPS ═══")
-i_sweepConfirmBars    = input.int(5, "Sweep Confirmation Bars", minval = 1, maxval = 10, group = "═══ 9. FVG & SWEEPS ═══")
+i_sweepBuffer = input.float(0.5, "Liquidity Sweep Buffer (ATR)",
+     minval = 0.1, maxval = 2.0, step = 0.1,
+     group = "B. STOP LOSS PLACEMENT",
+     tooltip = "Extra buffer BEYOND the structure level to survive bank sweeps.\n\n" +
+               "Banks and institutions often 'sweep' obvious stop levels before\n" +
+               "reversing. This buffer places your stop BEYOND where sweeps typically reach.\n\n" +
+               "► HIGHER (0.7-1.0) = More protection from sweeps\n" +
+               "   - Wider stop, survives more manipulation\n" +
+               "   - Larger position size reduction to maintain risk %\n\n" +
+               "► LOWER (0.2-0.4) = Tighter stops\n" +
+               "   - Less sweep protection\n" +
+               "   - Larger position sizes possible\n\n" +
+               "Value is multiplied by ATR. Example: 0.5 ATR on 15-pip ATR = 7.5 pips extra buffer")
 
-// ============================================================================
-// GROUP 10: MOMENTUM & TREND FILTERS
-// ============================================================================
-i_useMomentumFilter   = input.bool(true, "Use Momentum Filter", group = "═══ 10. MOMENTUM ═══")
-i_momentumLength      = input.int(10, "Momentum Lookback", minval = 5, maxval = 30, group = "═══ 10. MOMENTUM ═══")
-i_momentumThreshold   = input.float(0.3, "Momentum Threshold (ATR mult)", minval = 0.1, maxval = 1.0, step = 0.1, group = "═══ 10. MOMENTUM ═══")
-i_useTrendFilter      = input.bool(true, "Use Trend Filter", group = "═══ 10. MOMENTUM ═══")
-i_trendMALength       = input.int(50, "Trend MA Length", minval = 20, maxval = 200, group = "═══ 10. MOMENTUM ═══")
-i_useRSIFilter        = input.bool(true, "Use RSI Filter", group = "═══ 10. MOMENTUM ═══")
-i_rsiLength           = input.int(14, "RSI Length", minval = 5, maxval = 30, group = "═══ 10. MOMENTUM ═══")
-i_rsiOversold         = input.float(35, "RSI Oversold (Long)", minval = 20, maxval = 45, group = "═══ 10. MOMENTUM ═══")
-i_rsiOverbought       = input.float(65, "RSI Overbought (Short)", minval = 55, maxval = 80, group = "═══ 10. MOMENTUM ═══")
+i_minSLPips = input.float(30, "Minimum SL Distance (pips)",
+     minval = 10, maxval = 100, step = 5,
+     group = "B. STOP LOSS PLACEMENT",
+     tooltip = "Minimum stop loss distance regardless of structure.\n\n" +
+               "► Prevents stops that are too tight in low volatility\n" +
+               "► Ensures trade has room to breathe\n\n" +
+               "If structure suggests 15 pips but minimum is 30, SL will be 30 pips.")
 
-// ============================================================================
-// GROUP 11: SESSION & DAY FILTERS
-// ============================================================================
-i_useSessionFilter    = input.bool(true, "Enable Session Filter", group = "═══ 11. SESSION ═══")
-i_sessionStart        = input.int(3, "Session Start Hour (EST)", minval = 0, maxval = 23, group = "═══ 11. SESSION ═══")
-i_sessionEnd          = input.int(12, "Session End Hour (EST)", minval = 0, maxval = 23, group = "═══ 11. SESSION ═══", tooltip = "Focus on London/NY overlap")
-i_useDayFilter        = input.bool(true, "Enable Day Filter", group = "═══ 11. SESSION ═══")
-i_tradeMonday         = input.bool(false, "Trade Monday", group = "═══ 11. SESSION ═══", tooltip = "Mondays can be choppy")
-i_tradeTuesday        = input.bool(true, "Trade Tuesday", group = "═══ 11. SESSION ═══")
-i_tradeWednesday      = input.bool(true, "Trade Wednesday", group = "═══ 11. SESSION ═══")
-i_tradeThursday       = input.bool(true, "Trade Thursday", group = "═══ 11. SESSION ═══")
-i_tradeFriday         = input.bool(false, "Trade Friday", group = "═══ 11. SESSION ═══", tooltip = "Fridays can have unexpected moves")
+i_maxSLPips = input.float(200, "Maximum SL Distance (pips)",
+     minval = 50, maxval = 500, step = 25,
+     group = "B. STOP LOSS PLACEMENT",
+     tooltip = "Maximum stop loss distance regardless of structure.\n\n" +
+               "► Prevents excessively wide stops that reduce position size too much\n" +
+               "► Caps risk exposure in high volatility conditions\n\n" +
+               "If structure suggests 300 pips but maximum is 200, SL will be 200 pips.\n" +
+               "Position size adjusts to maintain 1% risk.")
 
-// ============================================================================
-// GROUP 12: EXPOSURE & DAILY LIMITS
-// ============================================================================
-i_maxDailyTrades      = input.int(5, "Max Trades Per Day", minval = 1, maxval = 20, group = "═══ 12. EXPOSURE ═══")
-i_maxDailyLosses      = input.int(2, "Max Losses Per Day", minval = 1, maxval = 5, group = "═══ 12. EXPOSURE ═══", tooltip = "Stop trading after this many losses")
-i_maxDailyLossPercent = input.float(2.0, "Max Daily Loss %", minval = 0.5, maxval = 5.0, step = 0.5, group = "═══ 12. EXPOSURE ═══")
-i_cooldownBars        = input.int(5, "Cooldown After Loss (bars)", minval = 0, maxval = 30, group = "═══ 12. EXPOSURE ═══")
-i_reduceOnDrawdown    = input.bool(true, "Reduce Size During Drawdown", group = "═══ 12. EXPOSURE ═══", tooltip = "Halve position size when in drawdown")
-i_drawdownReduceAt    = input.float(3.0, "Reduce Size At Drawdown %", minval = 1.0, maxval = 10.0, step = 0.5, group = "═══ 12. EXPOSURE ═══")
+i_atrSLMultiplier = input.float(2.0, "ATR SL Multiplier (if ATR method)",
+     minval = 1.0, maxval = 5.0, step = 0.25,
+     group = "B. STOP LOSS PLACEMENT",
+     tooltip = "Multiplier for ATR-based stop loss calculation.\n\n" +
+               "► HIGHER (2.5-3.5) = Wider stops, more room for volatility\n" +
+               "► LOWER (1.0-1.5) = Tighter stops, less room\n\n" +
+               "Only used when SL Method = 'ATR-Based'")
 
-// ============================================================================
-// GROUP 13: VISUALS & ALERTS
-// ============================================================================
-i_showOB              = input.bool(true, "Show Order Blocks", group = "═══ 13. VISUALS ═══")
-i_showFVG             = input.bool(true, "Show FVGs", group = "═══ 13. VISUALS ═══")
-i_showStructure       = input.bool(true, "Show Structure Points", group = "═══ 13. VISUALS ═══")
-i_showSignals         = input.bool(true, "Show Entry Signals", group = "═══ 13. VISUALS ═══")
-i_showTable           = input.bool(true, "Show Info Table", group = "═══ 13. VISUALS ═══")
-i_showRiskTable       = input.bool(true, "Show Risk Table", group = "═══ 13. VISUALS ═══")
-i_enableAlerts        = input.bool(true, "Enable Alerts", group = "═══ 13. VISUALS ═══")
+i_fixedSLPips = input.float(100, "Fixed SL Pips (if Fixed method)",
+     minval = 20, maxval = 300, step = 10,
+     group = "B. STOP LOSS PLACEMENT",
+     tooltip = "Static pip distance for stop loss.\n\n" +
+               "Only used when SL Method = 'Fixed Pips'")
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           CORE CALCULATIONS                                   ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION C: BREAKEVEN & TRAILING STOP (PROFIT PROTECTION)                                                   │
+// │ Controls WHEN and HOW the stop loss moves to protect profits                                               │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
-// --- ATR and Base Calculations ---
+i_enableBE = input.bool(true, "Enable Move to Breakeven",
+     group = "C. BREAKEVEN & TRAILING STOP",
+     tooltip = "Move stop loss to entry price (breakeven) once profit target is reached.\n\n" +
+               "► ON = Stop moves to BE after reaching profit threshold\n" +
+               "► OFF = Stop stays at original level until TP or trailing activates")
+
+i_beActivationPercent = input.float(1.0, "BE Activation (% profit)",
+     minval = 0.25, maxval = 3.0, step = 0.25,
+     group = "C. BREAKEVEN & TRAILING STOP",
+     tooltip = "Trade must be THIS % in profit before moving stop to breakeven.\n\n" +
+               "► HIGHER (1.5-2.0%) = More room for trade to develop\n" +
+               "   - Less likely to be stopped at BE during retracements\n" +
+               "   - Potentially misses locking in some gains\n\n" +
+               "► LOWER (0.5-0.75%) = Locks in breakeven faster\n" +
+               "   - More likely to exit at BE during normal pullbacks\n" +
+               "   - Protects entry sooner\n\n" +
+               "Example: At 1%, a $100,000 account needs $1,000 unrealized profit")
+
+i_bePlusPips = input.float(10, "BE Plus Pips (profit buffer)",
+     minval = 0, maxval = 50, step = 5,
+     group = "C. BREAKEVEN & TRAILING STOP",
+     tooltip = "Extra pips ABOVE breakeven when moving stop.\n\n" +
+               "► HIGHER (15-25) = Locks in small profit when moving to 'BE'\n" +
+               "   - Actually locks in profit, not just breakeven\n\n" +
+               "► ZERO = True breakeven (exit at entry price)\n" +
+               "   - No guaranteed profit, but maximum room for trade\n\n" +
+               "Example: Entry at 2000, BE+10 = Stop moves to 2001 (10 pips profit locked)")
+
+i_enableTrailing = input.bool(true, "Enable Trailing Stop",
+     group = "C. BREAKEVEN & TRAILING STOP",
+     tooltip = "After BE is hit, trail the stop behind price to lock in more profits.\n\n" +
+               "► ON = Stop follows price, locking in gains as trade moves\n" +
+               "► OFF = Stop stays at BE level, only exits at TP or BE")
+
+i_trailActivationPercent = input.float(1.0, "Trailing Activation (% profit)",
+     minval = 0.5, maxval = 5.0, step = 0.25,
+     group = "C. BREAKEVEN & TRAILING STOP",
+     tooltip = "Trade must be THIS % in profit before trailing stop activates.\n\n" +
+               "► Should be >= BE Activation\n" +
+               "► HIGHER = More room before trailing begins\n" +
+               "► LOWER = Starts trailing sooner\n\n" +
+               "Trailing only starts AFTER breakeven has been triggered.")
+
+i_trailMethod = input.string("ATR-Based", "Trailing Stop Method",
+     options = ["ATR-Based", "Swing-Based", "Fixed Pips"],
+     group = "C. BREAKEVEN & TRAILING STOP",
+     tooltip = "How the trailing stop distance is calculated.\n\n" +
+               "► ATR-BASED:\n" +
+               "   Trails by ATR multiplier from recent high/low.\n" +
+               "   Adapts to current volatility.\n\n" +
+               "► SWING-BASED:\n" +
+               "   Trails behind recent swing lows (long) or highs (short).\n" +
+               "   Respects market structure.\n\n" +
+               "► FIXED PIPS:\n" +
+               "   Static pip distance from highest/lowest point.\n" +
+               "   Simple and predictable.")
+
+i_trailATRMult = input.float(1.5, "Trailing ATR Multiplier",
+     minval = 0.5, maxval = 4.0, step = 0.25,
+     group = "C. BREAKEVEN & TRAILING STOP",
+     tooltip = "Distance behind price for ATR trailing stop.\n\n" +
+               "► HIGHER (2.0-3.0) = Looser trail, more room for pullbacks\n" +
+               "   - Captures bigger moves\n" +
+               "   - Gives back more profit if reverses\n\n" +
+               "► LOWER (0.75-1.25) = Tighter trail, locks profit faster\n" +
+               "   - May exit during minor pullbacks\n" +
+               "   - Protects gains aggressively")
+
+i_trailSwingLength = input.int(5, "Trailing Swing Length",
+     minval = 2, maxval = 15, step = 1,
+     group = "C. BREAKEVEN & TRAILING STOP",
+     tooltip = "Lookback period for swing-based trailing stop.\n\n" +
+               "► HIGHER = Uses larger swings, wider trail\n" +
+               "► LOWER = Uses smaller swings, tighter trail")
+
+i_trailFixedPips = input.float(50, "Trailing Fixed Pips",
+     minval = 10, maxval = 150, step = 10,
+     group = "C. BREAKEVEN & TRAILING STOP",
+     tooltip = "Fixed pip distance for trailing stop.\n\n" +
+               "Only used when Trailing Method = 'Fixed Pips'")
+
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION D: TAKE PROFIT TARGETS                                                                             │
+// │ Controls profit-taking levels and partial exit strategy                                                    │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+i_usePartialTP = input.bool(true, "Use Partial Take Profit",
+     group = "D. TAKE PROFIT TARGETS",
+     tooltip = "Take partial profits at TP1, let remainder run to TP2.\n\n" +
+               "► ON = Close portion at TP1, trail rest to TP2\n" +
+               "► OFF = Hold entire position until TP2 or stop")
+
+i_tp1RR = input.float(1.5, "TP1 Risk:Reward Ratio",
+     minval = 0.5, maxval = 3.0, step = 0.25,
+     group = "D. TAKE PROFIT TARGETS",
+     tooltip = "First take profit target as multiple of risk.\n\n" +
+               "► 1.0 = TP1 at 1:1 (if risking 100 pips, TP1 at 100 pips profit)\n" +
+               "► 1.5 = TP1 at 1.5:1 (if risking 100 pips, TP1 at 150 pips profit)\n" +
+               "► 2.0 = TP1 at 2:1 (if risking 100 pips, TP1 at 200 pips profit)\n\n" +
+               "HIGHER = Bigger wins but lower hit rate\n" +
+               "LOWER = More frequent wins but smaller size")
+
+i_tp2RR = input.float(3.0, "TP2 Risk:Reward Ratio",
+     minval = 1.0, maxval = 10.0, step = 0.5,
+     group = "D. TAKE PROFIT TARGETS",
+     tooltip = "Second (final) take profit target as multiple of risk.\n\n" +
+               "► 2.0 = TP2 at 2:1\n" +
+               "► 3.0 = TP2 at 3:1 (recommended)\n" +
+               "► 5.0 = TP2 at 5:1 (aggressive, lower hit rate)\n\n" +
+               "This is where the remainder of position exits (or trails)")
+
+i_tp1ClosePercent = input.float(50, "TP1 Close Percentage (%)",
+     minval = 25, maxval = 75, step = 5,
+     group = "D. TAKE PROFIT TARGETS",
+     tooltip = "Percentage of position to close at TP1.\n\n" +
+               "► 50% = Close half at TP1, trail half to TP2\n" +
+               "► 75% = Close most at TP1, small runner to TP2\n" +
+               "► 25% = Small partial, let majority run\n\n" +
+               "HIGHER = More guaranteed profit, less runner\n" +
+               "LOWER = Smaller lock-in, bigger potential")
+
+i_useStructureTP = input.bool(false, "Use Structure-Based TP",
+     group = "D. TAKE PROFIT TARGETS",
+     tooltip = "Use nearby structure levels for take profit instead of fixed RR.\n\n" +
+               "► ON = Targets swing highs/lows as natural resistance/support\n" +
+               "► OFF = Uses fixed Risk:Reward ratios\n\n" +
+               "Structure-based may give better win rate but smaller wins.")
+
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION E: ENTRY CONDITIONS & CONFIRMATION                                                                 │
+// │ Controls what signals are required to enter a trade                                                        │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+i_longEnabled = input.bool(true, "Enable Long Trades",
+     group = "E. ENTRY CONDITIONS",
+     tooltip = "Allow long (buy) positions.\n\n" +
+               "► Disable if backtesting shows poor long performance\n" +
+               "► Or during confirmed downtrends")
+
+i_shortEnabled = input.bool(true, "Enable Short Trades",
+     group = "E. ENTRY CONDITIONS",
+     tooltip = "Allow short (sell) positions.\n\n" +
+               "► Disable if backtesting shows poor short performance\n" +
+               "► XAUUSD often trends up, shorts may underperform")
+
+i_entryMode = input.string("Standard", "Entry Strictness",
+     options = ["Aggressive", "Standard", "Conservative"],
+     group = "E. ENTRY CONDITIONS",
+     tooltip = "How many confirmations required for entry.\n\n" +
+               "► AGGRESSIVE:\n" +
+               "   Fewer requirements, more trades\n" +
+               "   Lower win rate but more opportunities\n\n" +
+               "► STANDARD:\n" +
+               "   Balanced requirements\n" +
+               "   Moderate trade frequency and win rate\n\n" +
+               "► CONSERVATIVE:\n" +
+               "   Most requirements, fewer trades\n" +
+               "   Higher win rate but less opportunities")
+
+i_requireHTF = input.bool(true, "Require HTF Alignment",
+     group = "E. ENTRY CONDITIONS",
+     tooltip = "Higher timeframe bias must align with trade direction.\n\n" +
+               "► ON = Only long when HTF bullish, short when HTF bearish\n" +
+               "► OFF = Trade any direction regardless of HTF\n\n" +
+               "Recommended ON for higher win rate")
+
+i_requireOB = input.bool(true, "Require Order Block",
+     group = "E. ENTRY CONDITIONS",
+     tooltip = "Price must be at a valid Order Block to enter.\n\n" +
+               "► ON = Entries only at institutional OB zones\n" +
+               "► OFF = Can enter without OB confirmation\n\n" +
+               "Order Blocks are high-probability reversal zones")
+
+i_requireConfirmCandle = input.bool(true, "Require Confirmation Candle",
+     group = "E. ENTRY CONDITIONS",
+     tooltip = "Require a confirming candle pattern before entry.\n\n" +
+               "► ON = Wait for bullish/bearish candle confirmation\n" +
+               "► OFF = Enter immediately when conditions met\n\n" +
+               "Reduces false entries but may miss some moves")
+
+i_requireMomentum = input.bool(false, "Require Momentum Alignment",
+     group = "E. ENTRY CONDITIONS",
+     tooltip = "Momentum indicator must confirm direction.\n\n" +
+               "► ON = Additional momentum filter\n" +
+               "► OFF = No momentum requirement\n\n" +
+               "Can reduce trades in choppy markets")
+
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION F: HIGHER TIMEFRAME SETTINGS                                                                       │
+// │ Controls the HTF analysis for trade bias                                                                   │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+i_htfTimeframe = input.timeframe("240", "HTF Timeframe",
+     group = "F. HIGHER TIMEFRAME",
+     tooltip = "Higher timeframe for bias determination.\n\n" +
+               "► 60 = 1 Hour\n" +
+               "► 240 = 4 Hour (recommended for 15m entries)\n" +
+               "► D = Daily\n\n" +
+               "Should be 4-8x your entry timeframe")
+
+i_htfMALength = input.int(20, "HTF MA Length",
+     minval = 10, maxval = 50, step = 5,
+     group = "F. HIGHER TIMEFRAME",
+     tooltip = "Moving average period for HTF bias.\n\n" +
+               "► HIGHER = Slower, more stable bias\n" +
+               "► LOWER = Faster bias changes")
+
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION G: ORDER BLOCK DETECTION                                                                           │
+// │ Controls how Order Blocks are identified                                                                   │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+i_obLookback = input.int(20, "OB Lookback (bars)",
+     minval = 5, maxval = 50, step = 5,
+     group = "G. ORDER BLOCKS",
+     tooltip = "How many bars back to search for valid Order Blocks.\n\n" +
+               "► HIGHER = Older OBs still valid, more entry zones\n" +
+               "► LOWER = Only recent OBs valid, fewer but fresher zones")
+
+i_obProximity = input.float(0.5, "OB Proximity (ATR)",
+     minval = 0.1, maxval = 1.5, step = 0.1,
+     group = "G. ORDER BLOCKS",
+     tooltip = "How close price must be to OB to trigger entry.\n\n" +
+               "► HIGHER = Can enter further from OB\n" +
+               "► LOWER = Must be very close to OB level\n\n" +
+               "Value in ATR multiples")
+
+i_obMinStrength = input.float(0.3, "OB Minimum Strength (ATR)",
+     minval = 0.1, maxval = 1.0, step = 0.1,
+     group = "G. ORDER BLOCKS",
+     tooltip = "Minimum candle size to qualify as Order Block.\n\n" +
+               "► HIGHER = Only strong OBs counted\n" +
+               "► LOWER = Smaller candles qualify as OBs\n\n" +
+               "Filters weak, low-probability zones")
+
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION H: STRUCTURE ANALYSIS                                                                              │
+// │ Controls swing detection and market structure                                                              │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+i_swingLength = input.int(5, "Swing Detection Length",
+     minval = 2, maxval = 15, step = 1,
+     group = "H. STRUCTURE",
+     tooltip = "Bars on each side to confirm a swing high/low.\n\n" +
+               "► HIGHER (7-10) = Major swings only, fewer but stronger\n" +
+               "► LOWER (3-4) = Minor swings detected, more levels")
+
+i_structureLookback = input.int(50, "Structure Lookback (bars)",
+     minval = 20, maxval = 200, step = 10,
+     group = "H. STRUCTURE",
+     tooltip = "How far back to assess market structure/bias.\n\n" +
+               "► HIGHER = Longer-term trend assessment\n" +
+               "► LOWER = More reactive to recent price action")
+
+i_atrLength = input.int(14, "ATR Period",
+     minval = 5, maxval = 50, step = 1,
+     group = "H. STRUCTURE",
+     tooltip = "Period for Average True Range calculation.\n\n" +
+               "ATR is used throughout for dynamic measurements.\n" +
+               "► HIGHER = Smoother, less reactive to spikes\n" +
+               "► LOWER = More reactive to recent volatility")
+
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION I: SESSION & TIME FILTERS                                                                          │
+// │ Controls when trading is allowed                                                                           │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+i_useSessionFilter = input.bool(false, "Enable Session Filter",
+     group = "I. TIME FILTERS",
+     tooltip = "Only trade during specific hours.\n\n" +
+               "► ON = Restricted to session hours\n" +
+               "► OFF = Trade 24/5\n\n" +
+               "Recommended OFF to let trades develop")
+
+i_sessionStart = input.int(3, "Session Start (EST)",
+     minval = 0, maxval = 23,
+     group = "I. TIME FILTERS",
+     tooltip = "Hour to start trading (EST timezone).\n\n" +
+               "3 AM EST = London open")
+
+i_sessionEnd = input.int(17, "Session End (EST)",
+     minval = 0, maxval = 23,
+     group = "I. TIME FILTERS",
+     tooltip = "Hour to stop NEW entries (EST timezone).\n\n" +
+               "17 (5 PM) EST = After NY close")
+
+i_useDayFilter = input.bool(false, "Enable Day Filter",
+     group = "I. TIME FILTERS",
+     tooltip = "Only trade on selected days.\n\n" +
+               "► ON = Restricted to checked days\n" +
+               "► OFF = Trade all weekdays\n\n" +
+               "Recommended OFF to avoid missing setups")
+
+i_tradeMonday = input.bool(true, "Monday", inline = "days", group = "I. TIME FILTERS")
+i_tradeTuesday = input.bool(true, "Tuesday", inline = "days", group = "I. TIME FILTERS")
+i_tradeWednesday = input.bool(true, "Wednesday", inline = "days", group = "I. TIME FILTERS")
+i_tradeThursday = input.bool(true, "Thursday", inline = "days", group = "I. TIME FILTERS")
+i_tradeFriday = input.bool(true, "Friday", inline = "days", group = "I. TIME FILTERS")
+
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION J: DRAWDOWN & EXPOSURE PROTECTION                                                                  │
+// │ Controls when to reduce/stop trading based on losses                                                       │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+i_maxDrawdown = input.float(7.0, "Max Account Drawdown (%)",
+     minval = 2.0, maxval = 25.0, step = 1.0,
+     group = "J. DRAWDOWN PROTECTION",
+     tooltip = "Stop ALL trading when account drawdown hits this level.\n\n" +
+               "► Protects account from catastrophic losses\n" +
+               "► Resets when equity recovers\n\n" +
+               "Example: 7% on $100,000 = Stop at $93,000 equity")
+
+i_maxDailyLoss = input.float(2.0, "Max Daily Loss (%)",
+     minval = 0.5, maxval = 5.0, step = 0.5,
+     group = "J. DRAWDOWN PROTECTION",
+     tooltip = "Stop trading for the day after this % loss.\n\n" +
+               "► Prevents revenge trading and tilt\n" +
+               "► Resets next trading day")
+
+i_maxDailyTrades = input.int(5, "Max Trades Per Day",
+     minval = 1, maxval = 20, step = 1,
+     group = "J. DRAWDOWN PROTECTION",
+     tooltip = "Maximum number of trades allowed per day.\n\n" +
+               "► Prevents overtrading\n" +
+               "► Resets at midnight")
+
+i_cooldownBars = input.int(3, "Cooldown After Loss (bars)",
+     minval = 0, maxval = 20, step = 1,
+     group = "J. DRAWDOWN PROTECTION",
+     tooltip = "Bars to wait after a losing trade before new entry.\n\n" +
+               "► Prevents immediate re-entry after loss\n" +
+               "► Allows market to settle\n\n" +
+               "0 = No cooldown")
+
+// ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+// │ SECTION K: VISUAL SETTINGS                                                                                 │
+// │ Controls what is displayed on chart                                                                        │
+// └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+i_showOB = input.bool(true, "Show Order Blocks", group = "K. VISUALS")
+i_showStructure = input.bool(true, "Show Swing Points", group = "K. VISUALS")
+i_showEntries = input.bool(true, "Show Entry Signals", group = "K. VISUALS")
+i_showSLTP = input.bool(true, "Show SL/TP Levels", group = "K. VISUALS")
+i_showTable = input.bool(true, "Show Info Table", group = "K. VISUALS")
+i_showRiskTable = input.bool(true, "Show Risk Table", group = "K. VISUALS")
+i_enableAlerts = input.bool(true, "Enable Alerts", group = "K. VISUALS")
+
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     CORE CALCULATIONS                                                      ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+// --- ATR ---
 atr = ta.atr(i_atrLength)
-pipMultiplier = 10.0  // For XAUUSD, 1 pip = $0.10 movement
+pipMult = 10.0  // XAUUSD pip multiplier
 
-priceToPips(float price) => price * pipMultiplier
-pipsToPrice(float pips) => pips / pipMultiplier
+priceToPips(float price) => price * pipMult
+pipsToPrice(float pips) => pips / pipMult
 
 // --- Account Tracking ---
 var float peakEquity = strategy.initial_capital
 var float dailyStartEquity = strategy.initial_capital
-var float currentDrawdown = 0.0
-var float dailyPnL = 0.0
 var int dailyTrades = 0
 var int dailyLosses = 0
 var int lastLossBar = 0
-var int positionEntryBar = 0
 
-// Update peak equity
 if strategy.equity > peakEquity
     peakEquity := strategy.equity
 
-// Calculate current drawdown
-currentDrawdown := (peakEquity - strategy.equity) / peakEquity * 100
+currentDrawdown = (peakEquity - strategy.equity) / peakEquity * 100
 
-// New day reset
 newDay = ta.change(dayofweek) != 0
 if newDay
     dailyStartEquity := strategy.equity
     dailyTrades := 0
     dailyLosses := 0
-    dailyPnL := 0.0
 
-// Update daily P&L
-dailyPnL := strategy.equity - dailyStartEquity
+dailyPnL = strategy.equity - dailyStartEquity
+dailyLossPercent = dailyPnL < 0 ? math.abs(dailyPnL) / dailyStartEquity * 100 : 0
 
-// --- Drawdown Check ---
-inMaxDrawdown = currentDrawdown >= i_maxDrawdownPercent
-inDailyLossLimit = (dailyPnL < 0 ? math.abs(dailyPnL) / dailyStartEquity * 100 : 0) >= i_maxDailyLossPercent
-shouldReduceSize = i_reduceOnDrawdown and currentDrawdown >= i_drawdownReduceAt
+// --- Drawdown Checks ---
+inMaxDrawdown = currentDrawdown >= i_maxDrawdown
+inDailyLossLimit = dailyLossPercent >= i_maxDailyLoss
+canTrade = not inMaxDrawdown and not inDailyLossLimit and dailyTrades < i_maxDailyTrades
+notInCooldown = bar_index >= lastLossBar + i_cooldownBars
 
-// --- Position Sizing ---
-calcPositionSize(float slPips, bool isShort) =>
-    if not i_useRiskBasedLots
-        shouldReduceSize ? i_lotSize * 0.5 : i_lotSize
-    else
-        riskDollars = math.min(i_accountSize * (i_riskPerTrade / 100), i_maxDollarLoss)
-        if shouldReduceSize
-            riskDollars := riskDollars * 0.5
-        actualSlPips = slPips
-        if isShort
-            actualSlPips := slPips * i_shortSLMultiplier
-        lots = actualSlPips > 0 ? riskDollars / (actualSlPips * i_pipValue) : i_lotSize
-        math.max(0.01, math.min(10.0, lots))
-
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           STRUCTURE ANALYSIS                                  ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     STRUCTURE ANALYSIS                                                     ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
 // --- Swing Detection ---
 swingHigh = ta.pivothigh(high, i_swingLength, i_swingLength)
 swingLow = ta.pivotlow(low, i_swingLength, i_swingLength)
 
-// --- Track Current Swings ---
-var float currentSwingHigh = na
-var float currentSwingLow = na
-var int currentSwingHighBar = na
-var int currentSwingLowBar = na
+// --- Track Key Levels (for SL placement) ---
+var float lastSwingLow = na
+var float lastSwingHigh = na
+var int lastSwingLowBar = na
+var int lastSwingHighBar = na
+
+// Find most recent significant swing low (for long SL)
+findKeySwingLow() =>
+    keyLevel = low
+    for i = 1 to i_swingLookback
+        if low[i] < keyLevel
+            keyLevel := low[i]
+    keyLevel
+
+// Find most recent significant swing high (for short SL)
+findKeySwingHigh() =>
+    keyLevel = high
+    for i = 1 to i_swingLookback
+        if high[i] > keyLevel
+            keyLevel := high[i]
+    keyLevel
+
+keySwingLow = findKeySwingLow()
+keySwingHigh = findKeySwingHigh()
+
+// Update tracked swings
+if not na(swingLow)
+    lastSwingLow := swingLow
+    lastSwingLowBar := bar_index - i_swingLength
 
 if not na(swingHigh)
-    currentSwingHigh := swingHigh
-    currentSwingHighBar := bar_index - i_swingLength
+    lastSwingHigh := swingHigh
+    lastSwingHighBar := bar_index - i_swingLength
 
-if not na(swingLow)
-    currentSwingLow := swingLow
-    currentSwingLowBar := bar_index - i_swingLength
-
-// --- Market Structure Bias ---
+// --- Market Bias ---
 recentHigh = ta.highest(high, i_structureLookback)
 recentLow = ta.lowest(low, i_structureLookback)
 midPoint = (recentHigh + recentLow) / 2
-trendMA = ta.sma(close, i_trendMALength)
-fastMA = ta.sma(close, 20)
+trendMA = ta.sma(close, 50)
 
 var int bias = 0
-if close > midPoint and close > trendMA and fastMA > trendMA
+if close > midPoint and close > trendMA
     bias := 1  // Bullish
-else if close < midPoint and close < trendMA and fastMA < trendMA
+else if close < midPoint and close < trendMA
     bias := -1  // Bearish
 else
     bias := 0  // Neutral
@@ -269,27 +593,24 @@ else
 var int lastBullishBOSBar = na
 var int lastBearishBOSBar = na
 
-// Bullish BOS
-if not na(currentSwingHigh) and close > currentSwingHigh and close[1] <= currentSwingHigh
+if not na(lastSwingHigh) and close > lastSwingHigh and close[1] <= lastSwingHigh
     lastBullishBOSBar := bar_index
 
-// Bearish BOS
-if not na(currentSwingLow) and close < currentSwingLow and close[1] >= currentSwingLow
+if not na(lastSwingLow) and close < lastSwingLow and close[1] >= lastSwingLow
     lastBearishBOSBar := bar_index
 
 recentBullishBOS = not na(lastBullishBOSBar) and (bar_index - lastBullishBOSBar) <= i_structureLookback
 recentBearishBOS = not na(lastBearishBOSBar) and (bar_index - lastBearishBOSBar) <= i_structureLookback
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           HTF BIAS ANALYSIS                                   ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     HTF ANALYSIS                                                           ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
-// HTF 4H Bias
 htfClose = request.security(syminfo.tickerid, i_htfTimeframe, close, lookahead = barmerge.lookahead_off)
-htfMA = request.security(syminfo.tickerid, i_htfTimeframe, ta.sma(close, 20), lookahead = barmerge.lookahead_off)
-htfHighest = request.security(syminfo.tickerid, i_htfTimeframe, ta.highest(high, 20), lookahead = barmerge.lookahead_off)
-htfLowest = request.security(syminfo.tickerid, i_htfTimeframe, ta.lowest(low, 20), lookahead = barmerge.lookahead_off)
-htfMid = (htfHighest + htfLowest) / 2
+htfMA = request.security(syminfo.tickerid, i_htfTimeframe, ta.sma(close, i_htfMALength), lookahead = barmerge.lookahead_off)
+htfHigh = request.security(syminfo.tickerid, i_htfTimeframe, ta.highest(high, i_htfMALength), lookahead = barmerge.lookahead_off)
+htfLow = request.security(syminfo.tickerid, i_htfTimeframe, ta.lowest(low, i_htfMALength), lookahead = barmerge.lookahead_off)
+htfMid = (htfHigh + htfLow) / 2
 
 var int htfBias = 0
 if htfClose > htfMid and htfClose > htfMA
@@ -299,74 +620,52 @@ else if htfClose < htfMid and htfClose < htfMA
 else
     htfBias := 0
 
-// Daily Bias
-dailyClose = request.security(syminfo.tickerid, i_htfTimeframe2, close, lookahead = barmerge.lookahead_off)
-dailyMA = request.security(syminfo.tickerid, i_htfTimeframe2, ta.sma(close, 20), lookahead = barmerge.lookahead_off)
-
-var int dailyBias = 0
-if dailyClose > dailyMA
-    dailyBias := 1
-else if dailyClose < dailyMA
-    dailyBias := -1
-else
-    dailyBias := 0
-
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           ORDER BLOCK DETECTION                               ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     ORDER BLOCK DETECTION                                                  ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
 type OB
     float top
     float bottom
-    bool isBullish
     int barIdx
     bool valid
 
 var array<OB> bullishOBs = array.new<OB>()
 var array<OB> bearishOBs = array.new<OB>()
 
-// Detect Bullish OB (last bearish candle before bullish move)
-bearishCandle = close < open
-bullishCandle = close > open
-strongBullish = bullishCandle and (close - open) >= atr * i_obMinSize
-strongBearish = bearishCandle and (open - close) >= atr * i_obMinSize
+// Detect Bullish OB
+strongUp = close > open and (close - open) >= atr * i_obMinStrength
+strongDown = close < open and (open - close) >= atr * i_obMinStrength
 
-bullishOBDetected = strongBullish and bearishCandle[1] and close > high[1]
-if i_obRequireEngulfing
-    bullishOBDetected := bullishOBDetected and close > open[1] and open <= close[1]
+bullishOB = strongUp and close[1] < open[1] and close > high[1]
+bearishOB = strongDown and close[1] > open[1] and close < low[1]
 
-if bullishOBDetected
-    newOB = OB.new(high[1], low[1], true, bar_index - 1, true)
+if bullishOB
+    newOB = OB.new(high[1], low[1], bar_index - 1, true)
     array.push(bullishOBs, newOB)
-    if array.size(bullishOBs) > 10
+    if array.size(bullishOBs) > 15
         array.shift(bullishOBs)
 
-// Detect Bearish OB (last bullish candle before bearish move)
-bearishOBDetected = strongBearish and bullishCandle[1] and close < low[1]
-if i_obRequireEngulfing
-    bearishOBDetected := bearishOBDetected and close < open[1] and open >= close[1]
-
-if bearishOBDetected
-    newOB = OB.new(high[1], low[1], false, bar_index - 1, true)
+if bearishOB
+    newOB = OB.new(high[1], low[1], bar_index - 1, true)
     array.push(bearishOBs, newOB)
-    if array.size(bearishOBs) > 10
+    if array.size(bearishOBs) > 15
         array.shift(bearishOBs)
 
-// Check price at Order Block
+// Check price at OB
 priceAtBullishOB() =>
     result = false
-    obBottom = float(na)
+    obBot = float(na)
     if array.size(bullishOBs) > 0
         for i = array.size(bullishOBs) - 1 to 0
             ob = array.get(bullishOBs, i)
-            age = bar_index - ob.barIdx
-            if ob.valid and age <= i_obLookback
-                proximity = atr * i_obProximity
-                if low <= ob.top + proximity and close >= ob.bottom - proximity
+            if ob.valid and (bar_index - ob.barIdx) <= i_obLookback
+                prox = atr * i_obProximity
+                if low <= ob.top + prox and close >= ob.bottom - prox
                     result := true
-                    obBottom := ob.bottom
+                    obBot := ob.bottom
                     break
-    [result, obBottom]
+    [result, obBot]
 
 priceAtBearishOB() =>
     result = false
@@ -374,17 +673,16 @@ priceAtBearishOB() =>
     if array.size(bearishOBs) > 0
         for i = array.size(bearishOBs) - 1 to 0
             ob = array.get(bearishOBs, i)
-            age = bar_index - ob.barIdx
-            if ob.valid and age <= i_obLookback
-                proximity = atr * i_obProximity
-                if high >= ob.bottom - proximity and close <= ob.top + proximity
+            if ob.valid and (bar_index - ob.barIdx) <= i_obLookback
+                prox = atr * i_obProximity
+                if high >= ob.bottom - prox and close <= ob.top + prox
                     result := true
                     obTop := ob.top
                     break
     [result, obTop]
 
-[atBullishOB, bullOBBottom] = priceAtBullishOB()
-[atBearishOB, bearOBTop] = priceAtBearishOB()
+[atBullOB, bullOBBot] = priceAtBullishOB()
+[atBearOB, bearOBTop] = priceAtBearishOB()
 
 // Invalidate mitigated OBs
 if array.size(bullishOBs) > 0
@@ -399,85 +697,9 @@ if array.size(bearishOBs) > 0
         if high > ob.top
             ob.valid := false
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           FVG DETECTION                                       ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
-
-bullishFVG = low > high[2] and (low - high[2]) >= atr * i_fvgMinSize
-bearishFVG = high < low[2] and (low[2] - high) >= atr * i_fvgMinSize
-
-var float recentBullFVGTop = na
-var float recentBullFVGBottom = na
-var int recentBullFVGBar = na
-var float recentBearFVGTop = na
-var float recentBearFVGBottom = na
-var int recentBearFVGBar = na
-
-if bullishFVG
-    recentBullFVGTop := low
-    recentBullFVGBottom := high[2]
-    recentBullFVGBar := bar_index
-
-if bearishFVG
-    recentBearFVGTop := low[2]
-    recentBearFVGBottom := high
-    recentBearFVGBar := bar_index
-
-hasBullishFVG = not na(recentBullFVGBar) and (bar_index - recentBullFVGBar) <= i_fvgLookback
-hasBearishFVG = not na(recentBearFVGBar) and (bar_index - recentBearFVGBar) <= i_fvgLookback
-
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           LIQUIDITY SWEEP DETECTION                           ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
-
-recentSwingHigh = ta.highest(high[1], i_sweepLookback)
-recentSwingLow = ta.lowest(low[1], i_sweepLookback)
-
-// Bullish sweep: wick below recent low, close back inside
-bullishSweep = low < recentSwingLow and close > recentSwingLow and close > open
-
-// Bearish sweep: wick above recent high, close back inside
-bearishSweep = high > recentSwingHigh and close < recentSwingHigh and close < open
-
-var int lastBullishSweepBar = na
-var int lastBearishSweepBar = na
-
-if bullishSweep
-    lastBullishSweepBar := bar_index
-if bearishSweep
-    lastBearishSweepBar := bar_index
-
-recentBullishSweep = not na(lastBullishSweepBar) and (bar_index - lastBullishSweepBar) <= i_sweepConfirmBars
-recentBearishSweep = not na(lastBearishSweepBar) and (bar_index - lastBearishSweepBar) <= i_sweepConfirmBars
-
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           MOMENTUM & TREND INDICATORS                         ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
-
-// Momentum
-momentum = close - close[i_momentumLength]
-bullishMomentum = momentum > atr * i_momentumThreshold
-bearishMomentum = momentum < -atr * i_momentumThreshold
-
-// RSI
-rsi = ta.rsi(close, i_rsiLength)
-rsiLongOK = not i_useRSIFilter or rsi < i_rsiOversold or (rsi > 40 and rsi < 60 and rsi > rsi[1])
-rsiShortOK = not i_useRSIFilter or rsi > i_rsiOverbought or (rsi > 40 and rsi < 60 and rsi < rsi[1])
-
-// Trend
-aboveTrendMA = close > trendMA
-belowTrendMA = close < trendMA
-trendLongOK = not i_useTrendFilter or aboveTrendMA
-trendShortOK = not i_useTrendFilter or belowTrendMA
-
-// Price weakness for shorts (price below multiple MAs)
-ema20 = ta.ema(close, 20)
-ema50 = ta.ema(close, 50)
-priceWeakness = close < ema20 and close < ema50 and ema20 < ema50
-
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           SESSION & DAY FILTERS                               ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     SESSION FILTERS                                                        ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
 currentHour = hour(time, "America/New_York")
 inSession = not i_useSessionFilter or (currentHour >= i_sessionStart and currentHour < i_sessionEnd)
@@ -491,345 +713,364 @@ validDay = not i_useDayFilter or (
      (currentDay == dayofweek.friday and i_tradeFriday)
 )
 
-// Exposure checks
-canTradeExposure = dailyTrades < i_maxDailyTrades and dailyLosses < i_maxDailyLosses
-notInCooldown = bar_index >= lastLossBar + i_cooldownBars
+filtersPass = inSession and validDay and canTrade and notInCooldown
 
-// Combined filters
-filtersPass = inSession and validDay and canTradeExposure and notInCooldown and not inMaxDrawdown and not inDailyLossLimit
-
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           ENTRY CONDITIONS                                    ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     ENTRY CONDITIONS                                                       ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
 inLong = strategy.position_size > 0
 inShort = strategy.position_size < 0
 inPosition = inLong or inShort
 
-// === LONG ENTRY CONDITIONS ===
-longHTFOK = not i_longRequireHTF or (htfBias >= 0 and dailyBias >= 0)
-longOBOK = not i_longRequireOB or atBullishOB
-longFVGOK = not i_longRequireFVG or hasBullishFVG
-longSweepOK = not i_longRequireSweep or recentBullishSweep
-longBOSOK = not i_longRequireBOS or recentBullishBOS
-longMomentumOK = not i_longRequireMomentum or bullishMomentum
+// Confirmation candle
+bullishCandle = close > open and close > (high + low) / 2
+bearishCandle = close < open and close < (high + low) / 2
 
-longStructureOK = bias >= 0 or recentBullishBOS
-longConfirmCandle = close > open and close > (high + low) / 2
+// Momentum
+momentum = close - close[10]
+bullMomentum = momentum > atr * 0.3
+bearMomentum = momentum < -atr * 0.3
 
-longBaseCondition = i_enableLongs and filtersPass and not inPosition and longStructureOK
+// Build entry conditions based on mode
+htfLongOK = not i_requireHTF or htfBias >= 0
+htfShortOK = not i_requireHTF or htfBias <= 0
+obLongOK = not i_requireOB or atBullOB
+obShortOK = not i_requireOB or atBearOB
+confirmLongOK = not i_requireConfirmCandle or bullishCandle
+confirmShortOK = not i_requireConfirmCandle or bearishCandle
+momentumLongOK = not i_requireMomentum or bullMomentum
+momentumShortOK = not i_requireMomentum or bearMomentum
 
-longSignal = switch i_longEntryMode
-    "Aggressive" => longBaseCondition and longOBOK
-    "Standard" => longBaseCondition and longHTFOK and longOBOK and longConfirmCandle
-    "Conservative" => longBaseCondition and longHTFOK and longOBOK and longMomentumOK and longConfirmCandle and trendLongOK
-    => longBaseCondition
+structureLongOK = bias >= 0 or recentBullishBOS
+structureShortOK = bias <= 0 or recentBearishBOS
 
-// === SHORT ENTRY CONDITIONS (STRICTER) ===
-shortHTFOK = not i_shortRequireHTF or (htfBias <= 0 and dailyBias <= 0)
-shortOBOK = not i_shortRequireOB or atBearishOB
-shortFVGOK = not i_shortRequireFVG or hasBearishFVG
-shortSweepOK = not i_shortRequireSweep or recentBearishSweep
-shortBOSOK = not i_shortRequireBOS or recentBearishBOS
-shortMomentumOK = not i_shortRequireMomentum or bearishMomentum
-shortWeaknessOK = not i_shortRequireWeakness or priceWeakness
+longBase = i_longEnabled and filtersPass and not inPosition and structureLongOK
+shortBase = i_shortEnabled and filtersPass and not inPosition and structureShortOK
 
-shortStructureOK = bias <= 0 or recentBearishBOS
-shortConfirmCandle = close < open and close < (high + low) / 2
+longSignal = switch i_entryMode
+    "Aggressive" => longBase and obLongOK
+    "Standard" => longBase and htfLongOK and obLongOK and confirmLongOK
+    "Conservative" => longBase and htfLongOK and obLongOK and confirmLongOK and momentumLongOK
+    => longBase
 
-shortBaseCondition = i_enableShorts and filtersPass and not inPosition and shortStructureOK
+shortSignal = switch i_entryMode
+    "Aggressive" => shortBase and obShortOK
+    "Standard" => shortBase and htfShortOK and obShortOK and confirmShortOK
+    "Conservative" => shortBase and htfShortOK and obShortOK and confirmShortOK and momentumShortOK
+    => shortBase
 
-shortSignal = switch i_shortEntryMode
-    "Aggressive" => shortBaseCondition and shortOBOK
-    "Standard" => shortBaseCondition and shortHTFOK and shortOBOK and shortConfirmCandle
-    "Conservative" => shortBaseCondition and shortHTFOK and shortOBOK and shortFVGOK and shortMomentumOK and shortConfirmCandle and trendShortOK
-    "Very Conservative" => shortBaseCondition and shortHTFOK and shortOBOK and shortFVGOK and shortSweepOK and shortBOSOK and shortMomentumOK and shortWeaknessOK and shortConfirmCandle and trendShortOK and rsiShortOK
-    => shortBaseCondition
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     STOP LOSS CALCULATION                                                  ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           STOP LOSS CALCULATION                               ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
-
-calcStopLoss(bool isLong, bool isShort) =>
+calcStopLoss(bool isLong) =>
     sl = float(na)
+    sweepBuffer = atr * i_sweepBuffer
 
-    if i_slMode == "ATR"
-        slDist = atr * i_slATRMult
-        if isShort
-            slDist := slDist * i_shortSLMultiplier
-        sl := isLong ? close - slDist : close + slDist
-    else if i_slMode == "Structure"
-        buffer = pipsToPrice(i_slBuffer)
+    if i_slMethod == "Structure + Sweep Buffer"
         if isLong
-            structSL = not na(currentSwingLow) ? currentSwingLow - buffer : close - atr * 1.5
-            obSL = atBullishOB and not na(bullOBBottom) ? bullOBBottom - buffer : structSL
-            sl := math.min(structSL, obSL)
+            // SL below key swing low + liquidity sweep buffer
+            structureLevel = keySwingLow
+            sl := structureLevel - sweepBuffer
         else
-            structSL = not na(currentSwingHigh) ? currentSwingHigh + buffer : close + atr * 1.5
-            obSL = atBearishOB and not na(bearOBTop) ? bearOBTop + buffer : structSL
-            sl := math.max(structSL, obSL)
-            // Apply short SL multiplier (tighter)
-            slDist = math.abs(close - sl) * i_shortSLMultiplier
-            sl := close + slDist
-    else  // Fixed Pips
-        slPips = i_slFixedPips
-        if isShort
-            slPips := slPips * i_shortSLMultiplier
-        sl := isLong ? close - pipsToPrice(slPips) : close + pipsToPrice(slPips)
+            // SL above key swing high + liquidity sweep buffer
+            structureLevel = keySwingHigh
+            sl := structureLevel + sweepBuffer
 
-    // Enforce maximum SL distance
-    maxSLDist = pipsToPrice(i_maxSLPips)
-    if isLong and (close - sl) > maxSLDist
-        sl := close - maxSLDist
-    if isShort and (sl - close) > maxSLDist
-        sl := close + maxSLDist
+    else if i_slMethod == "ATR-Based"
+        slDist = atr * i_atrSLMultiplier
+        sl := isLong ? close - slDist : close + slDist
+
+    else if i_slMethod == "Fixed Pips"
+        slDist = pipsToPrice(i_fixedSLPips)
+        sl := isLong ? close - slDist : close + slDist
+
+    else if i_slMethod == "Order Block"
+        if isLong and not na(bullOBBot)
+            sl := bullOBBot - sweepBuffer
+        else if not isLong and not na(bearOBTop)
+            sl := bearOBTop + sweepBuffer
+        else
+            // Fallback to structure
+            sl := isLong ? keySwingLow - sweepBuffer : keySwingHigh + sweepBuffer
+
+    // Apply min/max constraints
+    slDist = math.abs(close - sl)
+    minDist = pipsToPrice(i_minSLPips)
+    maxDist = pipsToPrice(i_maxSLPips)
+
+    if slDist < minDist
+        sl := isLong ? close - minDist : close + minDist
+    if slDist > maxDist
+        sl := isLong ? close - maxDist : close + maxDist
 
     sl
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           STRATEGY EXECUTION                                  ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     POSITION SIZING                                                        ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+calcPositionSize(float slDistance) =>
+    riskAmount = math.min(i_accountSize * (i_riskPerTrade / 100), i_maxDollarRisk)
+    slPips = priceToPips(slDistance)
+    lots = slPips > 0 ? riskAmount / (slPips * i_pipValue) : 1.0
+    math.max(0.01, math.min(10.0, lots))
+
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     STRATEGY EXECUTION                                                     ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
 var float entryPrice = na
-var float stopLoss = na
-var float takeProfit1 = na
-var float takeProfit2 = na
-var bool isCurrentLong = false
+var float initialSL = na
+var float currentSL = na
+var float tp1Price = na
+var float tp2Price = na
+var int entryBar = na
+var bool beActivated = false
+var bool trailingActivated = false
+var float highestProfit = 0.0
+var float lowestProfit = 0.0
+var float highSinceEntry = na
+var float lowSinceEntry = na
 
 // --- LONG ENTRY ---
 if longSignal
     entryPrice := close
-    stopLoss := calcStopLoss(true, false)
-    slDist = math.abs(close - stopLoss)
+    initialSL := calcStopLoss(true)
+    currentSL := initialSL
+    slDist = math.abs(close - initialSL)
 
-    // Use long-specific RR ratios
-    takeProfit1 := close + slDist * i_longTP1RR
-    takeProfit2 := close + slDist * i_longTP2RR
+    tp1Price := close + slDist * i_tp1RR
+    tp2Price := close + slDist * i_tp2RR
 
-    slPips = priceToPips(slDist)
-    lots = calcPositionSize(slPips, false)
-
-    isCurrentLong := true
-    positionEntryBar := bar_index
+    lots = calcPositionSize(slDist)
+    entryBar := bar_index
+    beActivated := false
+    trailingActivated := false
+    highSinceEntry := close
+    lowSinceEntry := close
 
     strategy.entry("Long", strategy.long, qty = lots)
-    strategy.exit("Long TP1", "Long", qty_percent = i_tp1ClosePercent, limit = takeProfit1, stop = stopLoss)
-    strategy.exit("Long TP2", "Long", limit = takeProfit2, stop = stopLoss)
+
+    if i_usePartialTP
+        strategy.exit("Long TP1", "Long", qty_percent = i_tp1ClosePercent, limit = tp1Price, stop = initialSL)
+        strategy.exit("Long TP2", "Long", limit = tp2Price, stop = initialSL)
+    else
+        strategy.exit("Long Exit", "Long", limit = tp2Price, stop = initialSL)
 
     dailyTrades += 1
 
     if i_enableAlerts
-        alert("LONG Entry @ " + str.tostring(close) + " | SL: " + str.tostring(stopLoss) + " | TP1: " + str.tostring(takeProfit1), alert.freq_once_per_bar)
+        alert("LONG @ " + str.tostring(close) + " | SL: " + str.tostring(initialSL) + " | TP1: " + str.tostring(tp1Price) + " | TP2: " + str.tostring(tp2Price), alert.freq_once_per_bar)
 
 // --- SHORT ENTRY ---
 if shortSignal
     entryPrice := close
-    stopLoss := calcStopLoss(false, true)
-    slDist = math.abs(stopLoss - close)
+    initialSL := calcStopLoss(false)
+    currentSL := initialSL
+    slDist = math.abs(initialSL - close)
 
-    // Use short-specific RR ratios (faster TP)
-    takeProfit1 := close - slDist * i_shortTP1RR
-    takeProfit2 := close - slDist * i_shortTP2RR
+    tp1Price := close - slDist * i_tp1RR
+    tp2Price := close - slDist * i_tp2RR
 
-    slPips = priceToPips(slDist)
-    lots = calcPositionSize(slPips, true)
-
-    isCurrentLong := false
-    positionEntryBar := bar_index
+    lots = calcPositionSize(slDist)
+    entryBar := bar_index
+    beActivated := false
+    trailingActivated := false
+    highSinceEntry := close
+    lowSinceEntry := close
 
     strategy.entry("Short", strategy.short, qty = lots)
-    strategy.exit("Short TP1", "Short", qty_percent = i_tp1ClosePercent, limit = takeProfit1, stop = stopLoss)
-    strategy.exit("Short TP2", "Short", limit = takeProfit2, stop = stopLoss)
+
+    if i_usePartialTP
+        strategy.exit("Short TP1", "Short", qty_percent = i_tp1ClosePercent, limit = tp1Price, stop = initialSL)
+        strategy.exit("Short TP2", "Short", limit = tp2Price, stop = initialSL)
+    else
+        strategy.exit("Short Exit", "Short", limit = tp2Price, stop = initialSL)
 
     dailyTrades += 1
 
     if i_enableAlerts
-        alert("SHORT Entry @ " + str.tostring(close) + " | SL: " + str.tostring(stopLoss) + " | TP1: " + str.tostring(takeProfit1), alert.freq_once_per_bar)
+        alert("SHORT @ " + str.tostring(close) + " | SL: " + str.tostring(initialSL) + " | TP1: " + str.tostring(tp1Price) + " | TP2: " + str.tostring(tp2Price), alert.freq_once_per_bar)
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           TIME-BASED & HARD EXITS                             ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     BREAKEVEN & TRAILING STOP MANAGEMENT                                   ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
-barsInTrade = bar_index - positionEntryBar
-currentPnL = inLong ? close - entryPrice : inShort ? entryPrice - close : 0.0
-isLosing = currentPnL < 0
-isBreakeven = math.abs(currentPnL) < atr * 0.2
-isProfitable = currentPnL > 0
-
-// Time-based exit conditions
-maxBarsForThisTrade = inShort ? i_shortMaxBarsLosing : i_maxBarsLosing
-shouldTimeExitLosing = i_useTimeExit and isLosing and barsInTrade >= maxBarsForThisTrade
-shouldTimeExitBreakeven = i_useTimeExit and isBreakeven and barsInTrade >= i_maxBarsBreakeven
-shouldTimeExit = shouldTimeExitLosing or (shouldTimeExitBreakeven and not i_holdWinnersLonger)
-
-// EOD exit for losing trades
-isEODExit = i_useEODExit and hour(time, "America/New_York") >= i_eodHour and isLosing
-
-// Hard stop loss enforcement - close if loss exceeds max dollar
-currentDollarLoss = inPosition ? math.abs(currentPnL) * (inLong or inShort ? math.abs(strategy.position_size) : 0) * i_pipValue / pipMultiplier : 0.0
-shouldHardExit = i_enforceHardSL and currentDollarLoss > i_maxDollarLoss
-
-// Execute time/hard exits
-if inPosition and (shouldTimeExit or isEODExit or shouldHardExit)
-    exitReason = shouldHardExit ? "Hard SL" : shouldTimeExitLosing ? "Time Exit (Losing)" : isEODExit ? "EOD Exit" : "Time Exit (BE)"
-
+if inPosition
+    // Track high/low since entry
     if inLong
-        strategy.close("Long", comment = exitReason)
+        highSinceEntry := math.max(nz(highSinceEntry, close), high)
+        lowSinceEntry := math.min(nz(lowSinceEntry, close), low)
     if inShort
-        strategy.close("Short", comment = exitReason)
+        highSinceEntry := math.max(nz(highSinceEntry, close), high)
+        lowSinceEntry := math.min(nz(lowSinceEntry, close), low)
 
-    if i_enableAlerts
-        alert(exitReason + " @ " + str.tostring(close), alert.freq_once_per_bar)
+    // Calculate current profit %
+    currentProfitPips = inLong ? close - entryPrice : entryPrice - close
+    currentProfitPercent = (currentProfitPips / entryPrice) * 100
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           TRAILING STOP MANAGEMENT                            ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+    // Breakeven activation (only after +X% profit)
+    if i_enableBE and not beActivated and currentProfitPercent >= i_beActivationPercent
+        beActivated := true
+        beLevel = inLong ? entryPrice + pipsToPrice(i_bePlusPips) : entryPrice - pipsToPrice(i_bePlusPips)
+        currentSL := beLevel
 
-var bool tp1Hit = false
-var float trailingSL = na
+        if inLong
+            strategy.exit("Long BE", "Long", stop = currentSL)
+        if inShort
+            strategy.exit("Short BE", "Short", stop = currentSL)
 
-if inLong
-    // Detect TP1 hit (position reduced)
-    if strategy.position_size < strategy.position_size[1] and strategy.position_size > 0
-        tp1Hit := true
-        if i_beAfterTP1
-            trailingSL := entryPrice + pipsToPrice(i_bePlusPips)
+        if i_enableAlerts
+            alert("Breakeven activated @ " + str.tostring(currentSL), alert.freq_once_per_bar)
 
-    // Update trailing stop
-    if tp1Hit and i_useTrailingSL
-        newTrailSL = low[1] - atr * i_trailATRMult
-        if na(trailingSL) or newTrailSL > trailingSL
-            trailingSL := newTrailSL
-            strategy.exit("Long Trail", "Long", stop = trailingSL)
+    // Trailing stop activation (only after BE and +X% profit)
+    if i_enableTrailing and beActivated and currentProfitPercent >= i_trailActivationPercent
+        trailingActivated := true
 
-if inShort
-    if strategy.position_size > strategy.position_size[1] and strategy.position_size < 0
-        tp1Hit := true
-        if i_beAfterTP1
-            trailingSL := entryPrice - pipsToPrice(i_bePlusPips)
+        newTrailSL = float(na)
 
-    if tp1Hit and i_useTrailingSL
-        newTrailSL = high[1] + atr * i_trailATRMult
-        if na(trailingSL) or newTrailSL < trailingSL
-            trailingSL := newTrailSL
-            strategy.exit("Short Trail", "Short", stop = trailingSL)
+        if i_trailMethod == "ATR-Based"
+            if inLong
+                newTrailSL := highSinceEntry - atr * i_trailATRMult
+            if inShort
+                newTrailSL := lowSinceEntry + atr * i_trailATRMult
+
+        else if i_trailMethod == "Swing-Based"
+            trailSwingLow = ta.lowest(low, i_trailSwingLength)
+            trailSwingHigh = ta.highest(high, i_trailSwingLength)
+            if inLong
+                newTrailSL := trailSwingLow - atr * 0.2
+            if inShort
+                newTrailSL := trailSwingHigh + atr * 0.2
+
+        else if i_trailMethod == "Fixed Pips"
+            if inLong
+                newTrailSL := highSinceEntry - pipsToPrice(i_trailFixedPips)
+            if inShort
+                newTrailSL := lowSinceEntry + pipsToPrice(i_trailFixedPips)
+
+        // Only move SL in profit direction
+        if not na(newTrailSL)
+            if inLong and newTrailSL > currentSL
+                currentSL := newTrailSL
+                strategy.exit("Long Trail", "Long", stop = currentSL)
+            if inShort and newTrailSL < currentSL
+                currentSL := newTrailSL
+                strategy.exit("Short Trail", "Short", stop = currentSL)
 
 // Reset on position close
 if not inPosition and inPosition[1]
-    tp1Hit := false
-    trailingSL := na
+    beActivated := false
+    trailingActivated := false
+    highSinceEntry := na
+    lowSinceEntry := na
 
-// Track losses for cooldown
-if not inPosition and inPosition[1]
+    // Track losses for cooldown
     if strategy.closedtrades > 0
         lastProfit = strategy.closedtrades.profit(strategy.closedtrades - 1)
         if lastProfit < 0
             dailyLosses += 1
             lastLossBar := bar_index
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                           VISUALS & INFO TABLES                               ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                     VISUALS                                                                ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
 // Entry signals
-plotshape(i_showSignals and longSignal, title = "Long Signal", style = shape.triangleup, location = location.belowbar, color = color.green, size = size.normal)
-plotshape(i_showSignals and shortSignal, title = "Short Signal", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.normal)
+plotshape(i_showEntries and longSignal, "Long Entry", shape.triangleup, location.belowbar, color.green, size = size.normal)
+plotshape(i_showEntries and shortSignal, "Short Entry", shape.triangledown, location.abovebar, color.red, size = size.normal)
 
 // Structure
-plotshape(i_showStructure and not na(swingHigh), title = "Swing High", style = shape.circle, location = location.abovebar, color = color.new(color.red, 50), size = size.tiny, offset = -i_swingLength)
-plotshape(i_showStructure and not na(swingLow), title = "Swing Low", style = shape.circle, location = location.belowbar, color = color.new(color.green, 50), size = size.tiny, offset = -i_swingLength)
+plotshape(i_showStructure and not na(swingHigh), "Swing High", shape.circle, location.abovebar, color.new(color.red, 50), size = size.tiny, offset = -i_swingLength)
+plotshape(i_showStructure and not na(swingLow), "Swing Low", shape.circle, location.belowbar, color.new(color.green, 50), size = size.tiny, offset = -i_swingLength)
+
+// Key levels for SL
+plot(i_showSLTP ? keySwingLow : na, "Key Support", color.new(color.green, 70), 1, plot.style_stepline)
+plot(i_showSLTP ? keySwingHigh : na, "Key Resistance", color.new(color.red, 70), 1, plot.style_stepline)
+
+// Position levels
+plot(inPosition and i_showSLTP ? currentSL : na, "Current SL", color.red, 2, plot.style_linebr)
+plot(inPosition and i_showSLTP ? tp1Price : na, "TP1", color.green, 1, plot.style_linebr)
+plot(inPosition and i_showSLTP ? tp2Price : na, "TP2", color.lime, 1, plot.style_linebr)
+plot(inPosition and i_showSLTP ? entryPrice : na, "Entry", color.blue, 1, plot.style_linebr)
 
 // Bias background
-bgColor = bias == 1 ? color.new(color.green, 95) : bias == -1 ? color.new(color.red, 95) : na
-bgcolor(bgColor, title = "Bias Background")
-
-// Stop loss and TP lines when in position
-plot(inPosition ? stopLoss : na, title = "Stop Loss", color = color.red, style = plot.style_linebr, linewidth = 2)
-plot(inPosition ? takeProfit1 : na, title = "TP1", color = color.green, style = plot.style_linebr, linewidth = 1)
-plot(inPosition ? takeProfit2 : na, title = "TP2", color = color.lime, style = plot.style_linebr, linewidth = 1)
-plot(inPosition and tp1Hit ? trailingSL : na, title = "Trailing SL", color = color.orange, style = plot.style_linebr, linewidth = 2)
+bgCol = bias == 1 ? color.new(color.green, 95) : bias == -1 ? color.new(color.red, 95) : na
+bgcolor(bgCol)
 
 // Info Table
 if i_showTable and barstate.islast
-    var table infoTable = table.new(position.top_right, 2, 10, bgcolor = color.new(color.black, 80))
+    var table infoT = table.new(position.top_right, 2, 12, color.new(color.black, 80))
 
-    table.cell(infoTable, 0, 0, "SMC Strategy v5", text_color = color.white, text_size = size.small)
-    table.cell(infoTable, 1, 0, syminfo.ticker, text_color = color.yellow, text_size = size.small)
+    table.cell(infoT, 0, 0, "SMC Strategy v6", text_color = color.white, text_size = size.small)
+    table.cell(infoT, 1, 0, syminfo.ticker, text_color = color.yellow, text_size = size.small)
 
-    biasText = bias == 1 ? "BULLISH" : bias == -1 ? "BEARISH" : "NEUTRAL"
-    biasColor = bias == 1 ? color.green : bias == -1 ? color.red : color.gray
-    table.cell(infoTable, 0, 1, "LTF Bias", text_color = color.white, text_size = size.tiny)
-    table.cell(infoTable, 1, 1, biasText, text_color = biasColor, text_size = size.tiny)
+    table.cell(infoT, 0, 1, "LTF Bias", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 1, bias == 1 ? "BULL" : bias == -1 ? "BEAR" : "NEUTRAL", text_color = bias == 1 ? color.green : bias == -1 ? color.red : color.gray, text_size = size.tiny)
 
-    htfText = htfBias == 1 ? "BULLISH" : htfBias == -1 ? "BEARISH" : "NEUTRAL"
-    htfColor = htfBias == 1 ? color.green : htfBias == -1 ? color.red : color.gray
-    table.cell(infoTable, 0, 2, "HTF Bias", text_color = color.white, text_size = size.tiny)
-    table.cell(infoTable, 1, 2, htfText, text_color = htfColor, text_size = size.tiny)
+    table.cell(infoT, 0, 2, "HTF Bias", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 2, htfBias == 1 ? "BULL" : htfBias == -1 ? "BEAR" : "NEUTRAL", text_color = htfBias == 1 ? color.green : htfBias == -1 ? color.red : color.gray, text_size = size.tiny)
 
-    table.cell(infoTable, 0, 3, "At Bull OB", text_color = color.white, text_size = size.tiny)
-    table.cell(infoTable, 1, 3, atBullishOB ? "YES" : "NO", text_color = atBullishOB ? color.green : color.gray, text_size = size.tiny)
+    table.cell(infoT, 0, 3, "At Bull OB", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 3, atBullOB ? "YES" : "NO", text_color = atBullOB ? color.green : color.gray, text_size = size.tiny)
 
-    table.cell(infoTable, 0, 4, "At Bear OB", text_color = color.white, text_size = size.tiny)
-    table.cell(infoTable, 1, 4, atBearishOB ? "YES" : "NO", text_color = atBearishOB ? color.red : color.gray, text_size = size.tiny)
+    table.cell(infoT, 0, 4, "At Bear OB", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 4, atBearOB ? "YES" : "NO", text_color = atBearOB ? color.red : color.gray, text_size = size.tiny)
 
-    posText = inLong ? "LONG" : inShort ? "SHORT" : "FLAT"
-    posColor = inLong ? color.green : inShort ? color.red : color.gray
-    table.cell(infoTable, 0, 5, "Position", text_color = color.white, text_size = size.tiny)
-    table.cell(infoTable, 1, 5, posText, text_color = posColor, text_size = size.tiny)
+    table.cell(infoT, 0, 5, "Position", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 5, inLong ? "LONG" : inShort ? "SHORT" : "FLAT", text_color = inLong ? color.green : inShort ? color.red : color.gray, text_size = size.tiny)
 
-    table.cell(infoTable, 0, 6, "Trades Today", text_color = color.white, text_size = size.tiny)
-    table.cell(infoTable, 1, 6, str.tostring(dailyTrades) + "/" + str.tostring(i_maxDailyTrades), text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 0, 6, "BE Active", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 6, beActivated ? "YES" : "NO", text_color = beActivated ? color.green : color.gray, text_size = size.tiny)
 
-    table.cell(infoTable, 0, 7, "Losses Today", text_color = color.white, text_size = size.tiny)
-    table.cell(infoTable, 1, 7, str.tostring(dailyLosses) + "/" + str.tostring(i_maxDailyLosses), text_color = dailyLosses > 0 ? color.orange : color.white, text_size = size.tiny)
+    table.cell(infoT, 0, 7, "Trailing", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 7, trailingActivated ? "YES" : "NO", text_color = trailingActivated ? color.orange : color.gray, text_size = size.tiny)
 
-    table.cell(infoTable, 0, 8, "Filters", text_color = color.white, text_size = size.tiny)
-    table.cell(infoTable, 1, 8, filtersPass ? "PASS" : "BLOCKED", text_color = filtersPass ? color.green : color.red, text_size = size.tiny)
+    table.cell(infoT, 0, 8, "Key Support", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 8, str.tostring(keySwingLow, "#.##"), text_color = color.green, text_size = size.tiny)
 
-    table.cell(infoTable, 0, 9, "Session", text_color = color.white, text_size = size.tiny)
-    table.cell(infoTable, 1, 9, inSession ? "ACTIVE" : "CLOSED", text_color = inSession ? color.green : color.gray, text_size = size.tiny)
+    table.cell(infoT, 0, 9, "Key Resist", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 9, str.tostring(keySwingHigh, "#.##"), text_color = color.red, text_size = size.tiny)
+
+    table.cell(infoT, 0, 10, "Trades Today", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 10, str.tostring(dailyTrades) + "/" + str.tostring(i_maxDailyTrades), text_color = color.white, text_size = size.tiny)
+
+    table.cell(infoT, 0, 11, "Filters", text_color = color.white, text_size = size.tiny)
+    table.cell(infoT, 1, 11, filtersPass ? "PASS" : "BLOCKED", text_color = filtersPass ? color.green : color.red, text_size = size.tiny)
 
 // Risk Table
 if i_showRiskTable and barstate.islast
-    var table riskTable = table.new(position.bottom_right, 2, 7, bgcolor = color.new(color.black, 80))
+    var table riskT = table.new(position.bottom_right, 2, 6, color.new(color.black, 80))
 
-    table.cell(riskTable, 0, 0, "═══ RISK STATUS ═══", text_color = color.yellow, text_size = size.small)
-    table.cell(riskTable, 1, 0, "", text_color = color.white, text_size = size.small)
+    table.cell(riskT, 0, 0, "═ RISK STATUS ═", text_color = color.yellow, text_size = size.small)
+    table.cell(riskT, 1, 0, "", text_size = size.small)
 
-    table.cell(riskTable, 0, 1, "Account Drawdown", text_color = color.white, text_size = size.tiny)
-    ddColor = currentDrawdown > 5 ? color.red : currentDrawdown > 3 ? color.orange : color.green
-    table.cell(riskTable, 1, 1, str.tostring(currentDrawdown, "#.##") + "%", text_color = ddColor, text_size = size.tiny)
+    table.cell(riskT, 0, 1, "Account DD", text_color = color.white, text_size = size.tiny)
+    ddCol = currentDrawdown > 5 ? color.red : currentDrawdown > 3 ? color.orange : color.green
+    table.cell(riskT, 1, 1, str.tostring(currentDrawdown, "#.##") + "% / " + str.tostring(i_maxDrawdown) + "%", text_color = ddCol, text_size = size.tiny)
 
-    table.cell(riskTable, 0, 2, "Max Drawdown", text_color = color.white, text_size = size.tiny)
-    table.cell(riskTable, 1, 2, str.tostring(i_maxDrawdownPercent) + "%", text_color = color.gray, text_size = size.tiny)
+    table.cell(riskT, 0, 2, "Daily P&L", text_color = color.white, text_size = size.tiny)
+    table.cell(riskT, 1, 2, "$" + str.tostring(dailyPnL, "#.##"), text_color = dailyPnL >= 0 ? color.green : color.red, text_size = size.tiny)
 
-    table.cell(riskTable, 0, 3, "Daily P&L", text_color = color.white, text_size = size.tiny)
-    pnlColor = dailyPnL >= 0 ? color.green : color.red
-    table.cell(riskTable, 1, 3, "$" + str.tostring(dailyPnL, "#.##"), text_color = pnlColor, text_size = size.tiny)
+    table.cell(riskT, 0, 3, "Risk/Trade", text_color = color.white, text_size = size.tiny)
+    table.cell(riskT, 1, 3, str.tostring(i_riskPerTrade) + "% / $" + str.tostring(i_maxDollarRisk), text_color = color.white, text_size = size.tiny)
 
-    table.cell(riskTable, 0, 4, "Risk Per Trade", text_color = color.white, text_size = size.tiny)
-    table.cell(riskTable, 1, 4, str.tostring(i_riskPerTrade) + "% / $" + str.tostring(i_maxDollarLoss), text_color = color.white, text_size = size.tiny)
+    table.cell(riskT, 0, 4, "SL Method", text_color = color.white, text_size = size.tiny)
+    table.cell(riskT, 1, 4, i_slMethod, text_color = color.aqua, text_size = size.tiny)
 
-    table.cell(riskTable, 0, 5, "Position Size", text_color = color.white, text_size = size.tiny)
-    sizeText = shouldReduceSize ? "REDUCED" : "NORMAL"
-    sizeColor = shouldReduceSize ? color.orange : color.green
-    table.cell(riskTable, 1, 5, sizeText, text_color = sizeColor, text_size = size.tiny)
+    statusTxt = inMaxDrawdown ? "MAX DD" : inDailyLossLimit ? "DAILY LIMIT" : "OK"
+    statusCol = (inMaxDrawdown or inDailyLossLimit) ? color.red : color.green
+    table.cell(riskT, 0, 5, "Status", text_color = color.white, text_size = size.tiny)
+    table.cell(riskT, 1, 5, statusTxt, text_color = statusCol, text_size = size.tiny)
 
-    statusText = inMaxDrawdown ? "MAX DD HIT" : inDailyLossLimit ? "DAILY LIMIT" : "TRADING OK"
-    statusColor = (inMaxDrawdown or inDailyLossLimit) ? color.red : color.green
-    table.cell(riskTable, 0, 6, "Status", text_color = color.white, text_size = size.tiny)
-    table.cell(riskTable, 1, 6, statusText, text_color = statusColor, text_size = size.tiny)
+// Debug
+plot(currentDrawdown, "Drawdown %", display = display.data_window)
+plot(inPosition ? (inLong ? close - entryPrice : entryPrice - close) : 0, "Unrealized P&L", display = display.data_window)
+plot(beActivated ? 1 : 0, "BE Active", display = display.data_window)
+plot(trailingActivated ? 1 : 0, "Trail Active", display = display.data_window)
 
-// Debug plots (data window only)
-plot(atBullishOB ? 1 : 0, title = "At Bullish OB", display = display.data_window)
-plot(atBearishOB ? 1 : 0, title = "At Bearish OB", display = display.data_window)
-plot(recentBullishBOS ? 1 : 0, title = "Recent Bull BOS", display = display.data_window)
-plot(recentBearishBOS ? 1 : 0, title = "Recent Bear BOS", display = display.data_window)
-plot(bullishMomentum ? 1 : bearishMomentum ? -1 : 0, title = "Momentum", display = display.data_window)
-plot(rsi, title = "RSI", display = display.data_window)
-plot(currentDrawdown, title = "Drawdown %", display = display.data_window)
-plot(barsInTrade, title = "Bars In Trade", display = display.data_window)
-
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                                    END                                        ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
+// ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+// ║                                              END                                                           ║
+// ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
