@@ -278,15 +278,9 @@ bos_bull = close > ta.highest(high[1], 5)
 bos_bear = close < ta.lowest(low[1], 5)
 
 // Combined entry triggers
-bullTrigger = i_entryType == "Any Bullish/Bearish" ? bullCandle :
-              i_entryType == "Engulfing Only" ? bullEngulf :
-              i_entryType == "Engulfing + Momentum" ? (bullEngulf and bullMomentum) :
-              i_entryType == "Break of Structure" ? bos_bull : bullCandle
+bullTrigger = (i_entryType == "Any Bullish/Bearish" ? bullCandle : i_entryType == "Engulfing Only" ? bullEngulf : i_entryType == "Engulfing + Momentum" ? (bullEngulf and bullMomentum) : i_entryType == "Break of Structure" ? bos_bull : bullCandle)
 
-bearTrigger = i_entryType == "Any Bullish/Bearish" ? bearCandle :
-              i_entryType == "Engulfing Only" ? bearEngulf :
-              i_entryType == "Engulfing + Momentum" ? (bearEngulf and bearMomentum) :
-              i_entryType == "Break of Structure" ? bos_bear : bearCandle
+bearTrigger = (i_entryType == "Any Bullish/Bearish" ? bearCandle : i_entryType == "Engulfing Only" ? bearEngulf : i_entryType == "Engulfing + Momentum" ? (bearEngulf and bearMomentum) : i_entryType == "Break of Structure" ? bos_bear : bearCandle)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //                              SESSION FILTER
@@ -298,11 +292,7 @@ londonActive = hourEST >= 3 and hourEST < 12
 nyActive = hourEST >= 8 and hourEST < 17
 overlapActive = hourEST >= 8 and hourEST < 12
 
-sessionOK = not i_useSession ? true :
-            i_session == "London Only" ? londonActive :
-            i_session == "NY Only" ? nyActive :
-            i_session == "London + NY" ? (londonActive or nyActive) :
-            i_session == "Overlap Only" ? overlapActive : true
+sessionOK = (not i_useSession ? true : i_session == "London Only" ? londonActive : i_session == "NY Only" ? nyActive : i_session == "London + NY" ? (londonActive or nyActive) : i_session == "Overlap Only" ? overlapActive : true)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //                              RISK MANAGEMENT
