@@ -635,17 +635,8 @@ else if htfClose < htfMA
 else
     htfBias := 0
 
-htfLongOK = switch i_htfStrictness
-    "Loose" => htfBias >= 0
-    "Standard" => htfBias >= 0
-    "Strict" => htfBias == 1
-    => true
-
-htfShortOK = switch i_htfStrictness
-    "Loose" => htfBias <= 0
-    "Standard" => htfBias <= 0
-    "Strict" => htfBias == -1
-    => true
+htfLongOK = i_htfStrictness == "Strict" ? htfBias == 1 : htfBias >= 0
+htfShortOK = i_htfStrictness == "Strict" ? htfBias == -1 : htfBias <= 0
 
 // ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
 // ║                                         ORDER BLOCK DETECTION                                              ║
@@ -765,19 +756,11 @@ bearEngulf = close < open and close < low[1] and open > high[1]
 bullPin = (high - low) > atr * 0.5 and (open - low) > candleRange * 0.6 and close > open
 bearPin = (high - low) > atr * 0.5 and (high - open) > candleRange * 0.6 and close < open
 
-paLongOK = not i_usePAConfirm or switch i_paType
-    "Strong Close" => bullishClose and strongClose
-    "Engulfing" => bullEngulf
-    "Pin Bar" => bullPin
-    "Any Reversal" => bullishClose or bullEngulf or bullPin
-    => true
+paLongResult = i_paType == "Strong Close" ? (bullishClose and strongClose) : i_paType == "Engulfing" ? bullEngulf : i_paType == "Pin Bar" ? bullPin : i_paType == "Any Reversal" ? (bullishClose or bullEngulf or bullPin) : true
+paLongOK = not i_usePAConfirm or paLongResult
 
-paShortOK = not i_usePAConfirm or switch i_paType
-    "Strong Close" => bearishClose and strongClose
-    "Engulfing" => bearEngulf
-    "Pin Bar" => bearPin
-    "Any Reversal" => bearishClose or bearEngulf or bearPin
-    => true
+paShortResult = i_paType == "Strong Close" ? (bearishClose and strongClose) : i_paType == "Engulfing" ? bearEngulf : i_paType == "Pin Bar" ? bearPin : i_paType == "Any Reversal" ? (bearishClose or bearEngulf or bearPin) : true
+paShortOK = not i_usePAConfirm or paShortResult
 
 // --- Session Filter ---
 hour_est = hour(time, "America/New_York")
@@ -786,13 +769,8 @@ londonSession = hour_est >= 3 and hour_est < 12
 nySession = hour_est >= 8 and hour_est < 17
 overlapSession = hour_est >= 8 and hour_est < 12
 
-sessionOK = not i_useSession or switch i_sessionType
-    "London Only" => londonSession
-    "NY Only" => nySession
-    "London + NY" => londonSession or nySession
-    "London/NY Overlap" => overlapSession
-    "All Sessions" => true
-    => true
+sessionResult = i_sessionType == "London Only" ? londonSession : i_sessionType == "NY Only" ? nySession : i_sessionType == "London + NY" ? (londonSession or nySession) : i_sessionType == "London/NY Overlap" ? overlapSession : true
+sessionOK = not i_useSession or sessionResult
 
 // --- Day Filter ---
 dow = dayofweek(time)
